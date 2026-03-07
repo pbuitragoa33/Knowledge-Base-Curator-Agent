@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de Documentos - {{ course }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header-top">
+            <a href="/" class="btn btn-secondary btn-small">← Cambiar Curso</a>
+            <h1>{{ course }}</h1>
+            <div class="user-info">
+                <span>👤 {{ session.get('user', 'Usuario') }}</span>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </div>
+        </div>
+
+        <div id="contentContainer"></div>
+
+        <div id="contentContainer"></div>
+    </div>
+
+    <script>
+        const role = '{{ session.get("role") }}';
+        const course = '{{ course }}';
+        const userName = '{{ session.get("user") }}';
+
+        // Cargar interfaz según el rol
+        if (role === 'admin' || role === 'profesor') {
+            loadProfessorInterface();
+        } else {
+            loadStudentInterface();
+        }
+
+        async function loadProfessorInterface() {
+            const container = document.getElementById('contentContainer');
+            container.innerHTML = `
+                <div class="content-grid">
+                    <!-- Sección de Carga de Documentos -->
+                    <div class="card upload-card">
+                        <h2>Subir Documentos del Curso</h2>
+                        
+                        <div id="dropZone" class="drop-zone">
+                            <div class="drop-zone-content">
+                                <div class="drop-icon">📤</div>
+                                <h3>Arrastra documentos aquí</h3>
+                                <p>o haz clic para seleccionar</p>
+                                <p class="drop-formats">Formatos permitidos: PDF, MD, DOCX, TXT</p>
+                            </div>
+                            <input type="file" id="fileInput" multiple accept=".pdf,.md,.docx,.txt" style="display: none;">
+                        </div>
+
+                        <div id="fileList" class="file-list" style="display: none;">
+                            <h3>Archivos a subir:</h3>
+                            <div id="selectedFiles"></div>
+                            <button id="uploadBtn" class="btn btn-success">Subir Documentos</button>
+                            <button id="clearBtn" class="btn btn-danger">Limpiar</button>
+                        </div>
+
+                        <div id="uploadProgress" class="upload-progress" style="display: none;">
+                            <p>Subiendo documentos...</p>
+                            <div class="progress-bar">
+                                <div id="progressFill" class="progress-fill"></div>
+                            </div>
+                        </div>
+
+                        <div id="uploadMessage" class="upload-message"></div>
+                    </div>
+
+                    <!-- Sección de Documentos -->
+                    <div class="card documents-card">
+                        <h2>Documentos del Curso</h2>
+                        <div id="documentsContainer" class="documents-list">
+                            <p class="loading">Cargando documentos...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sección de Comentarios -->
+                <div class="card comments-card">
+                    <h2>Comentarios de Estudiantes</h2>
+                    <div id="commentsContainer" class="comments-list">
+                        <p class="loading">Cargando comentarios...</p>
+                    </div>
+                </div>
+            `;
+
+            setupFileUpload();
+            await loadDocuments();
+            await loadAllComments();
+        }
+
+        async function loadStudentInterface() {
+            const container = document.getElementById('contentContainer');
+            container.innerHTML = `
+                <div class="content-grid">
+                    <!-- Sección de Documentos -->
+                    <div class="card documents-card">
+                        <h2>Documentos del Curso</h2>
+                        <div id="documentsContainer" class="documents-list">
+                            <p class="loading">Cargando documentos...</p>
+                        </div>
+                    </div>
+
+                    <!-- Sección de Comentarios -->
+                    <div class="card comments-form-card">
+                        <h2>Agregar Comentario</h2>
+                        <div id="commentFormContainer"></div>
+                    </div>
+                </div>
+            `;
+
+            await loadDocuments();
+            setupCommentForm();
+        }
+
+        function setupFileUpload() {
+            const dropZone = document.getElementById('dropZone');
+            const fileInput = document.getElementById('fileInput');
+            const fileList = document.getElementById('fileList');
+            const selectedFiles = document.getElementById('selectedFiles');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const uploadProgress = document.getElementById('uploadProgress');
+            const uploadMessage = document.getElementById('uploadMessage');
+
+            let files = [];
+
+            dropZone.addEventListener('click', () => fileInput.click());
+            
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                handleFiles(e.dataTransfer.files);
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                handleFiles(e.target.files);
+            });
+
+            function handleFiles(newFiles) {
+                files = Array.from(newFiles);
+                
+                if (files.length === 0) {
+                    fileList.style.display = 'none';
+                    return;
+                }
+
+                selectedFiles.innerHTML = files.map((file, index) => `
+                    <div class="file-item">
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-size">${(file.size / 1024).toFixed(2)} KB</span>
+                        <button class="btn-remove" onclick="removeFile(${index})">✕</button>
+                    </div>
+                `).join('');
+
+                fileList.style.display = 'block';
+                uploadMessage.innerHTML = '';
+            }
+
+            window.removeFile = function(index) {
+                files.splice(index, 1);
+                if (files.length === 0) {
+                    fileList.style.display = 'none';
+                } else {
+                    handleFiles(files);
+                }
+            };
+
+            clearBtn.addEventListener('click', () => {
+                files = [];
+                fileList.style.display = 'none';
+                fileInput.value = '';
+                uploadMessage.innerHTML = '';
+            });
+
+            uploadBtn.addEventListener('click', async () => {
+                if (files.length === 0) return;
+
+                const formData = new FormData();
+                files.forEach(file => {
+                    formData.append('files[]', file);
+                });
+
+                uploadProgress.style.display = 'block';
+                uploadBtn.disabled = true;
+
+                try {
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const data = await response.json();
+
+                    uploadProgress.style.display = 'none';
+
+                    if (response.ok) {
+                        uploadMessage.innerHTML = `
+                            <div class="success-message">
+                                <p>✓ ${data.files.length} documento(s) subido(s) exitosamente</p>
+                                <p><strong>Hash global:</strong> ${data.upload_hash}</p>
+                                <p><strong>Fecha:</strong> ${data.upload_date}</p>
+                            </div>
+                        `;
+                        files = [];
+                        fileList.style.display = 'none';
+                        fileInput.value = '';
+                        setTimeout(() => loadDocuments(), 1500);
+                    } else {
+                        uploadMessage.innerHTML = `<div class="error-message">Error: ${data.error}</div>`;
+                    }
+                } catch (error) {
+                    uploadProgress.style.display = 'none';
+                    uploadMessage.innerHTML = `<div class="error-message">Error: ${error.message}</div>`;
+                } finally {
+                    uploadBtn.disabled = false;
+                }
+            });
+        }
+
+        async function loadDocuments() {
+            try {
+                const response = await fetch(`/api/documents/${encodeURIComponent(course)}`);
+                const documents = await response.json();
+
+                const container = document.getElementById('documentsContainer');
+                
+                if (documents.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay documentos en este curso aún</p>';
+                    return;
+                }
+
+                if (role === 'admin' || role === 'profesor') {
+                    container.innerHTML = documents.map(doc => `
+                        <div class="document-item">
+                            <div class="document-header">
+                                <div>
+                                    <p class="document-name">${doc.filename}</p>
+                                    <p class="document-info">
+                                        <span>Hash: <code>${doc.file_hash}</code></span>
+                                        <span>Subido por: ${doc.uploaded_by}</span>
+                                    </p>
+                                    <p class="document-date">${doc.upload_date}</p>
+                                </div>
+                                <button class="btn-delete-doc" onclick="deleteDocument(${doc.id})">🗑️</button>
+                            </div>
+                            <div class="document-comments-preview" id="comments-${doc.id}">
+                                <p class="loading">Cargando comentarios...</p>
+                            </div>
+                        </div>
+                    `).join('');
+
+                    documents.forEach(doc => loadDocumentComments(doc.id));
+                } else {
+                    container.innerHTML = documents.map(doc => `
+                        <div class="document-item">
+                            <p class="document-name">${doc.filename}</p>
+                            <p class="document-info">
+                                Hash: <code>${doc.file_hash}</code>
+                            </p>
+                            <p class="document-date">${doc.upload_date}</p>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                document.getElementById('documentsContainer').innerHTML = 
+                    `<p class="error-message">Error: ${error.message}</p>`;
+            }
+        }
+
+        async function loadDocumentComments(docId) {
+            try {
+                const response = await fetch(`/api/comments/${docId}`);
+                if (!response.ok) {
+                    document.getElementById(`comments-${docId}`).innerHTML = 
+                        '<p class="no-data">Sin comentarios</p>';
+                    return;
+                }
+
+                const comments = await response.json();
+                const container = document.getElementById(`comments-${docId}`);
+                
+                if (comments.length === 0) {
+                    container.innerHTML = '<p class="no-data">Sin comentarios</p>';
+                    return;
+                }
+
+                container.innerHTML = `
+                    <div class="comments-list-preview">
+                        ${comments.map(c => `
+                            <div class="comment-item">
+                                <p class="comment-author"><strong>${c.student_name}</strong></p>
+                                <p class="comment-text">${c.comment_text}</p>
+                                <p class="comment-date">${c.comment_date}</p>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Error loading comments:', error);
+            }
+        }
+
+        async function loadAllComments() {
+            try {
+                const docsResponse = await fetch(`/api/documents/${encodeURIComponent(course)}`);
+                const documents = await docsResponse.json();
+
+                const container = document.getElementById('commentsContainer');
+                
+                if (documents.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay documentos para mostrar comentarios</p>';
+                    return;
+                }
+
+                let allComments = [];
+                for (const doc of documents) {
+                    try {
+                        const response = await fetch(`/api/comments/${doc.id}`);
+                        if (response.ok) {
+                            const comments = await response.json();
+                            allComments.push({
+                                document: doc,
+                                comments: comments
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error loading comments for doc', doc.id);
+                    }
+                }
+
+                if (allComments.filter(x => x.comments.length > 0).length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay comentarios aún</p>';
+                    return;
+                }
+
+                container.innerHTML = allComments.filter(x => x.comments.length > 0).map(item => `
+                    <div class="document-comments-section">
+                        <h3>${item.document.filename}</h3>
+                        <div class="comments-list-full">
+                            ${item.comments.map(c => `
+                                <div class="comment-item-full">
+                                    <p class="comment-author"><strong>${c.student_name}</strong></p>
+                                    <p class="comment-text">${c.comment_text}</p>
+                                    <p class="comment-date">${c.comment_date}</p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        window.deleteDocument = async function(docId) {
+            if (!confirm('¿Estás seguro de eliminar este documento?')) return;
+
+            try {
+                const response = await fetch(`/api/delete-document/${docId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    alert('Documento eliminado');
+                    loadDocuments();
+                    loadAllComments();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        };
+
+        function setupCommentForm() {
+            const container = document.getElementById('commentFormContainer');
+            container.innerHTML = `
+                <div id="docSelector" style="display: none;">
+                    <select id="documentSelect" class="form-select">
+                        <option value="">Selecciona un documento...</option>
+                    </select>
+                    <textarea id="commentText" class="form-textarea" placeholder="Tu comentario..." maxlength="500"></textarea>
+                    <p id="charCount" class="char-count">0/500</p>
+                    <button id="submitComment" class="btn btn-success">Enviar Comentario</button>
+                </div>
+            `;
+
+            loadDocumentsForComments();
+        }
+
+        async function loadDocumentsForComments() {
+            try {
+                const response = await fetch(`/api/documents/${encodeURIComponent(course)}`);
+                const documents = await response.json();
+
+                const select = document.getElementById('documentSelect');
+                const docSelector = document.getElementById('docSelector');
+                
+                if (documents.length === 0) {
+                    docSelector.innerHTML = '<p class="no-data">No hay documentos disponibles</p>';
+                    return;
+                }
+
+                docSelector.style.display = 'block';
+                documents.forEach(doc => {
+                    const option = document.createElement('option');
+                    option.value = doc.id;
+                    option.textContent = doc.filename;
+                    select.appendChild(option);
+                });
+
+                const commentText = document.getElementById('commentText');
+                const charCount = document.getElementById('charCount');
+                const submitBtn = document.getElementById('submitComment');
+
+                commentText.addEventListener('input', () => {
+                    charCount.textContent = `${commentText.value.length}/500`;
+                });
+
+                submitBtn.addEventListener('click', async () => {
+                    const docId = select.value;
+                    const text = commentText.value.trim();
+
+                    if (!docId) {
+                        alert('Por favor selecciona un documento');
+                        return;
+                    }
+
+                    if (!text) {
+                        alert('Por favor escribe un comentario');
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/api/add-comment', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                document_id: docId,
+                                comment_text: text
+                            })
+                        });
+
+                        if (response.ok) {
+                            alert('Comentario enviado correctamente');
+                            commentText.value = '';
+                            charCount.textContent = '0/500';
+                            select.value = '';
+                        } else {
+                            const data = await response.json();
+                            alert('Error: ' + data.error);
+                        }
+                    } catch (error) {
+                        alert('Error: ' + error.message);
+                    }
+                });
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+    </script>
+</body>
+</html>
