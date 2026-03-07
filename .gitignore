@@ -416,3 +416,10 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+
+# Por si algo, para que los trackeen
+
+venv_project/
+__pycache__/
+*.pyc
