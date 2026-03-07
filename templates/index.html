@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Curador de Conocimiento Asistido - Seleccionar Curso (shelf)</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header-top">
+            <h1>Curador de Conocimiento Asistido</h1>
+            <div class="user-info">
+                <span>👤 {{ session.user }} ({{ session.role }})</span>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </div>
+        </div>
+
+        <div class="card selection-card">
+            <h2>Seleccionar Curso</h2>
+            <p class="subtitle">Por favor, selecciona un curso para continuar</p>
+            
+            <div class="courses-container" id="coursesContainer">
+                <p class="loading">Cargando shelves...</p>
+            </div>
+            
+            <button id="acceptBtn" class="btn btn-primary" disabled>
+                Aceptar
+            </button>
+
+            <!-- Sección Admin: Crear/Eliminar Cursos -->
+            {% if session.role in ['admin', 'profesor'] %}
+            <div class="admin-section">
+                <h3>Administración de Cursos</h3>
+                
+                <div class="create-course-form">
+                    <input type="text" id="courseName" placeholder="Nombre del nuevo curso (máx 100 caracteres)" maxlength="100">
+                    <button id="createBtn" class="btn btn-success">Crear Curso</button>
+                </div>
+
+                <div id="message" class="message"></div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        let selectedCourse = null;
+        const isAdmin = {{ 'true' if session.role in ['admin', 'profesor'] else 'false' }};
+
+        async function loadCourses() {
+            try {
+                const response = await fetch('/api/courses');
+                const courses = await response.json();
+                
+                const container = document.getElementById('coursesContainer');
+                
+                if (courses.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay cursos disponibles</p>';
+                    return;
+                }
+
+                container.innerHTML = courses.map(course => `
+                    <div class="course-option" data-course="${course}">
+                        <div class="course-header">
+                            <div class="course-content">
+                                <div class="course-icon">📱</div>
+                                <h3>${course}</h3>
+                            </div>
+                            ${isAdmin ? `
+                                <button class="btn-delete-course" onclick="deleteCourse('${course}', event)">
+                                    ✕
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `).join('');
+
+                // Agregar listeners
+                document.querySelectorAll('.course-option').forEach(option => {
+                    const deleteBtn = option.querySelector('.btn-delete-course');
+                    if (deleteBtn) {
+                        deleteBtn.addEventListener('click', (e) => e.stopPropagation());
+                    }
+                    option.addEventListener('click', selectCourse);
+                });
+            } catch (error) {
+                document.getElementById('coursesContainer').innerHTML = 
+                    `<p class="error-message">Error al cargar cursos: ${error.message}</p>`;
+            }
+        }
+
+        function selectCourse(e) {
+            if (e.target.closest('.btn-delete-course')) return;
+            
+            document.querySelectorAll('.course-option').forEach(o => o.classList.remove('selected'));
+            this.classList.add('selected');
+            selectedCourse = this.dataset.course;
+            document.getElementById('acceptBtn').disabled = false;
+        }
+
+        document.getElementById('acceptBtn').addEventListener('click', function() {
+            if (selectedCourse) {
+                window.location.href = `/upload/${encodeURIComponent(selectedCourse)}`;
+            }
+        });
+
+        // Crear Curso
+        if (isAdmin) {
+            document.getElementById('createBtn').addEventListener('click', async function() {
+                const name = document.getElementById('courseName').value.trim();
+                const messageDiv = document.getElementById('message');
+                
+                if (!name) {
+                    messageDiv.innerHTML = '<div class="error-message">Por favor ingresa un nombre</div>';
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/create-course', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ name })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        messageDiv.innerHTML = `<div class="success-message">${data.message}</div>`;
+                        document.getElementById('courseName').value = '';
+                        setTimeout(() => {
+                            messageDiv.innerHTML = '';
+                            loadCourses();
+                        }, 2000);
+                    } else {
+                        messageDiv.innerHTML = `<div class="error-message">${data.error}</div>`;
+                    }
+                } catch (error) {
+                    messageDiv.innerHTML = `<div class="error-message">Error: ${error.message}</div>`;
+                }
+            });
+
+            // Enter para crear curso
+            document.getElementById('courseName').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    document.getElementById('createBtn').click();
+                }
+            });
+        }
+
+        // Eliminar Curso
+        async function deleteCourse(course, event) {
+            event.preventDefault();
+            event.stopPropagation();
+            
+            if (!confirm(`¿Estás seguro de que deseas eliminar el curso "${course}"?\n\nEsto eliminará TODOS los archivos e histórico asociados.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/delete-course/${encodeURIComponent(course)}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    document.getElementById('message').innerHTML = 
+                        `<div class="success-message">${data.message}</div>`;
+                    setTimeout(() => {
+                        loadCourses();
+                        document.getElementById('message').innerHTML = '';
+                    }, 2000);
+                } else {
+                    document.getElementById('message').innerHTML = 
+                        `<div class="error-message">${data.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = 
+                    `<div class="error-message">Error: ${error.message}</div>`;
+            }
+        }
+
+        // Cargar cursos al iniciar
+        loadCourses();
+    </script>
+</body>
+</html>
