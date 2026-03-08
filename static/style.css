@@ -213,7 +213,7 @@ body {
 
 .courses-container {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 20px;
     margin-bottom: 30px;
 }
@@ -224,7 +224,7 @@ body {
     border-radius: 10px;
     cursor: pointer;
     transition: all 0.3s ease;
-    text-align: center;
+    text-align: left;
     background: #f9f9f9;
 }
 
@@ -237,10 +237,10 @@ body {
 
 .course-option .course-content {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 15px;
     flex: 1;
-    justify-content: center;
+    justify-content: flex-start;
 }
 
 .course-option:hover {
@@ -258,12 +258,24 @@ body {
 
 .course-icon {
     font-size: 2em;
+    line-height: 1;
 }
 
 .course-option h3 {
     color: #333;
-    margin: 0;
+    margin: 0 0 6px 0;
     font-size: 1.1em;
+}
+
+.course-text {
+    width: 100%;
+}
+
+.course-meta {
+    color: #666;
+    margin: 4px 0 0 0;
+    font-size: 0.9em;
+    line-height: 1.3;
 }
 
 .btn-delete-course {
@@ -296,24 +308,38 @@ body {
 }
 
 .create-course-form {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 10px;
     margin-bottom: 15px;
 }
 
-.create-course-form input {
-    flex: 1;
+.create-course-form input,
+.create-course-form select {
     padding: 12px;
     border: 1px solid #ddd;
     border-radius: 6px;
     font-size: 1em;
     transition: border-color 0.3s;
+    width: 100%;
 }
 
-.create-course-form input:focus {
+.create-course-form input:focus,
+.create-course-form select:focus {
     outline: none;
     border-color: #667eea;
     box-shadow: 0 0 5px rgba(102, 126, 234, 0.2);
+}
+
+.create-course-form .btn-success {
+    grid-column: 1 / -1;
+    margin-top: 0;
+}
+
+@media (max-width: 700px) {
+    .create-course-form {
+        grid-template-columns: 1fr;
+    }
 }
 
 .message {

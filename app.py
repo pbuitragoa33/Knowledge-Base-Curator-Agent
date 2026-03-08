@@ -1,4 +1,4 @@
-# Orquestador de la Aplicación
+﻿# Orquestador de la AplicaciÃ³n
 
 
 # ------------
@@ -25,12 +25,13 @@ app.secret_key = 'tu_clave_secreta_segura_cambiar'
 
 
 # ----------------------------------------------------
-# Configuración --> extensiones, directorios y rutas
+# ConfiguraciÃ³n --> extensiones, directorios y rutas
 # ----------------------------------------------------
 
 DOWNLOAD_DIR = os.path.expanduser('~/Downloads/UploadedFiles')
 ALLOWED_EXTENSIONS = {'pdf', 'md', 'docx', 'txt'}
 DATABASE = 'database.db'
+VALID_SHELF_STATUS = {'borrador', 'publicado'}
 
 
 # -----------------------------------------
@@ -46,37 +47,174 @@ os.makedirs(DOWNLOAD_DIR, exist_ok = True)
 # Funciones de Segurtidad (Hash)
 # -------------------------------
 
-# Contraseña como hash  con el algoritmo SHA256
+# ContraseÃ±a como hash  con el algoritmo SHA256
 
 def hash_password(password):
 
-    """Hash simple para contraseña (en producción usar bcrypt)"""
+    """Hash simple para contraseÃ±a (en producciÃ³n usar bcrypt)"""
 
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Verificación de contraseña
+# VerificaciÃ³n de contraseÃ±a
 
 def verify_password(password, hashed):
 
-    """Verifica contraseña"""
+    """Verifica contraseÃ±a"""
 
     return hash_password(password) == hashed
+
+
+def normalize_course_code(course_code):
+
+    """Normaliza el cÃ³digo del curso."""
+
+    return str(course_code or '').strip().upper()
+
+
+def _create_courses_table(cursor, table_name = 'courses'):
+
+    cursor.execute(f'''CREATE TABLE IF NOT EXISTS {table_name}
+                 (id INTEGER PRIMARY KEY,
+                  name TEXT UNIQUE NOT NULL,
+                  course_code TEXT NOT NULL,
+                  responsible_teacher TEXT NOT NULL,
+                  status TEXT NOT NULL CHECK(status IN ('borrador', 'publicado')),
+                  created_by TEXT,
+                  created_date TEXT)''')
+
+
+def _create_courses_indexes(cursor):
+
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_code_nocase ON courses(course_code COLLATE NOCASE)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_courses_responsible_teacher ON courses(responsible_teacher)")
+
+
+def _get_first_teacher(cursor):
+
+    cursor.execute("SELECT username FROM users WHERE role = 'profesor' ORDER BY id LIMIT 1")
+    result = cursor.fetchone()
+
+    return result[0] if result else None
+
+
+def _next_unique_course_code(base_code, used_codes):
+
+    normalized_base = normalize_course_code(base_code)[:30] if base_code else 'LEGACY'
+    candidate = normalized_base
+    suffix = 2
+
+    while candidate.lower() in used_codes:
+
+        suffix_text = f"-{suffix}"
+        candidate = f"{normalized_base[:30 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+
+    used_codes.add(candidate.lower())
+
+    return candidate
+
+
+def _ensure_courses_schema(conn, cursor):
+
+    expected_columns = ['id', 'name', 'course_code', 'responsible_teacher', 'status', 'created_by', 'created_date']
+    cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'courses'")
+    table_exists = cursor.fetchone() is not None
+
+    if not table_exists:
+
+        _create_courses_table(cursor)
+        _create_courses_indexes(cursor)
+        return
+
+    cursor.execute("PRAGMA table_info(courses)")
+    current_columns = [row[1] for row in cursor.fetchall()]
+
+    if current_columns == expected_columns:
+
+        _create_courses_indexes(cursor)
+        return
+
+    cursor.execute("SELECT * FROM courses ORDER BY id")
+    existing_rows = cursor.fetchall()
+    first_teacher = _get_first_teacher(cursor)
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    used_codes = set()
+    migrated_rows = []
+
+    for old_row in existing_rows:
+
+        row = dict(zip(current_columns, old_row))
+        course_id = row.get('id')
+        course_name = (row.get('name') or '').strip()
+
+        if not course_name:
+            continue
+
+        created_by = (row.get('created_by') or '').strip() or None
+        created_date = row.get('created_date') or now
+
+        course_code = row.get('course_code')
+        if course_code:
+            course_code = str(course_code).strip()
+
+        if not course_code:
+            course_code = f"LEGACY-{course_id if course_id is not None else len(migrated_rows) + 1}"
+
+        unique_code = _next_unique_course_code(course_code, used_codes)
+        responsible_teacher = (row.get('responsible_teacher') or '').strip()
+
+        if responsible_teacher:
+
+            cursor.execute("SELECT role FROM users WHERE username = ?", (responsible_teacher,))
+            teacher_role = cursor.fetchone()
+
+            if not teacher_role or teacher_role[0] != 'profesor':
+                responsible_teacher = ''
+
+        if not responsible_teacher and created_by:
+
+            cursor.execute("SELECT role FROM users WHERE username = ?", (created_by,))
+            creator_role = cursor.fetchone()
+
+            if creator_role and creator_role[0] == 'profesor':
+                responsible_teacher = created_by
+
+        if not responsible_teacher:
+            responsible_teacher = first_teacher or created_by or 'profesor'
+
+        status = str(row.get('status') or 'borrador').strip().lower()
+        if status not in VALID_SHELF_STATUS:
+            status = 'borrador'
+
+        migrated_rows.append(
+            (course_id, course_name, unique_code, responsible_teacher, status, created_by, created_date)
+        )
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    cursor.execute("DROP TABLE IF EXISTS courses_new")
+    _create_courses_table(cursor, table_name = 'courses_new')
+    cursor.executemany('''INSERT INTO courses_new
+                          (id, name, course_code, responsible_teacher, status, created_by, created_date)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)''', migrated_rows)
+    cursor.execute("DROP TABLE courses")
+    cursor.execute("ALTER TABLE courses_new RENAME TO courses")
+    _create_courses_indexes(cursor)
+    conn.execute("PRAGMA foreign_keys = ON")
 
 
 # --------------------------------------------------
 # Acciones relacinadas a la Base de Datos (SQLite3)
 # --------------------------------------------------
 
-# Inicialización y Conexión
-# Creación de tablas (en caso de que exista se hace Ingesta)
-# Creación de Usuarios y conexiones entre los roles y acciones
+# InicializaciÃ³n y ConexiÃ³n
+# CreaciÃ³n de tablas (en caso de que exista se hace Ingesta)
+# CreaciÃ³n de Usuarios y conexiones entre los roles y acciones
 
 
 def init_db():
 
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    
 
     # Tabla de Usuario
 
@@ -85,66 +223,9 @@ def init_db():
                   username TEXT UNIQUE NOT NULL,
                   password TEXT NOT NULL,
                   role TEXT NOT NULL)''')
-    
 
-    # Tabla de Cursos o Shelves
+    # Crear usuarios por defecto si no
 
-    c.execute('''CREATE TABLE IF NOT EXISTS courses
-                 (id INTEGER PRIMARY KEY,
-                  name TEXT UNIQUE NOT NULL,
-                  created_by TEXT,
-                  created_date TEXT)''')
-    
-
-    # Tabla de Documentos ((son globales por curso)
-
-    c.execute('''CREATE TABLE IF NOT EXISTS documents
-                 (id INTEGER PRIMARY KEY,
-                  course TEXT NOT NULL,
-                  doc_hash TEXT UNIQUE NOT NULL,
-                  filename TEXT NOT NULL,
-                  file_hash TEXT NOT NULL,
-                  upload_date TEXT NOT NULL,
-                  filepath TEXT NOT NULL,
-                  uploaded_by TEXT NOT NULL,
-                  FOREIGN KEY(course) REFERENCES courses(name))''')
-    
-
-    # Tabla de Comentarios de Estudiantes
-
-    c.execute('''CREATE TABLE IF NOT EXISTS comments
-                 (id INTEGER PRIMARY KEY,
-                  document_id INTEGER NOT NULL,
-                  student_name TEXT NOT NULL,
-                  comment_text TEXT NOT NULL,
-                  comment_date TEXT NOT NULL,
-                  FOREIGN KEY(document_id) REFERENCES documents(id))''')
-    
-
-    # Tabla Antigua de Uploads (para compatibilidad)
-
-    c.execute('''CREATE TABLE IF NOT EXISTS uploads
-                 (id INTEGER PRIMARY KEY, 
-                  session_id TEXT,
-                  upload_hash TEXT UNIQUE,
-                  course TEXT,
-                  upload_date TEXT,
-                  files_json TEXT)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS files
-                 (id INTEGER PRIMARY KEY,
-                  upload_hash TEXT,
-                  filename TEXT,
-                  file_hash TEXT,
-                  upload_date TEXT,
-                  filepath TEXT,
-                  FOREIGN KEY(upload_hash) REFERENCES uploads(upload_hash))''')
-    
-    conn.commit()
-    
-
-    # Crear usuarios por defecto si no 
-    
     c.execute("SELECT COUNT(*) FROM users")
 
     if c.fetchone()[0] == 0:
@@ -156,20 +237,71 @@ def init_db():
         ]
 
         c.executemany('INSERT INTO users VALUES (NULL, ?, ?, ?)', users)
-    
+
+    # Tabla de Cursos o Shelves + migracion de esquema
+
+    _ensure_courses_schema(conn, c)
+
+    # Tabla de Documentos (son globales por curso)
+
+    c.execute('''CREATE TABLE IF NOT EXISTS documents
+                 (id INTEGER PRIMARY KEY,
+                  course TEXT NOT NULL,
+                  doc_hash TEXT UNIQUE NOT NULL,
+                  filename TEXT NOT NULL,
+                  file_hash TEXT NOT NULL,
+                  upload_date TEXT NOT NULL,
+                  filepath TEXT NOT NULL,
+                  uploaded_by TEXT NOT NULL,
+                  FOREIGN KEY(course) REFERENCES courses(name))''')
+
+    # Tabla de Comentarios de Estudiantes
+
+    c.execute('''CREATE TABLE IF NOT EXISTS comments
+                 (id INTEGER PRIMARY KEY,
+                  document_id INTEGER NOT NULL,
+                  student_name TEXT NOT NULL,
+                  comment_text TEXT NOT NULL,
+                  comment_date TEXT NOT NULL,
+                  FOREIGN KEY(document_id) REFERENCES documents(id))''')
+
+    # Tabla Antigua de Uploads (para compatibilidad)
+
+    c.execute('''CREATE TABLE IF NOT EXISTS uploads
+                 (id INTEGER PRIMARY KEY,
+                  session_id TEXT,
+                  upload_hash TEXT UNIQUE,
+                  course TEXT,
+                  upload_date TEXT,
+                  files_json TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS files
+                 (id INTEGER PRIMARY KEY,
+                  upload_hash TEXT,
+                  filename TEXT,
+                  file_hash TEXT,
+                  upload_date TEXT,
+                  filepath TEXT,
+                  FOREIGN KEY(upload_hash) REFERENCES uploads(upload_hash))''')
+
     # Crear cursos por defecto si no existen
 
     c.execute("SELECT COUNT(*) FROM courses")
 
     if c.fetchone()[0] == 0:
 
+        default_teacher = _get_first_teacher(c) or 'profesor'
+        default_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         default_courses = [
-            ('Ingeniería de Software', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-            ('Ingeniería de Sistemas', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-            ('Ingeniería en Redes', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            ('Ingenieria de Software', 'ISW-101', default_teacher, 'publicado', 'admin', default_date),
+            ('Ingenieria de Sistemas', 'ISI-102', default_teacher, 'publicado', 'admin', default_date),
+            ('Ingenieria en Redes', 'RED-103', default_teacher, 'publicado', 'admin', default_date)
         ]
-        c.executemany('INSERT INTO courses VALUES (NULL, ?, ?, ?)', default_courses)
-    
+
+        c.executemany('''INSERT INTO courses
+                         (name, course_code, responsible_teacher, status, created_by, created_date)
+                         VALUES (?, ?, ?, ?, ?, ?)''', default_courses)
+
     conn.commit()
     conn.close()
 
@@ -214,7 +346,7 @@ def admin_required(f):
 
             return redirect(url_for('login'))
         
-        # Conexión con la base de datos
+        # ConexiÃ³n con la base de datos
         
         conn = sqlite3.connect(DATABASE)
         c = conn.cursor()
@@ -277,7 +409,7 @@ def generate_file_hash(filepath):
 
 
 # -----------------------
-# Rutas de Autenticación
+# Rutas de AutenticaciÃ³n
 # -----------------------
 
 # Login
@@ -307,7 +439,7 @@ def login():
         
         else:
 
-            return render_template('login.html', error = 'Usuario o contraseña incorrectos')
+            return render_template('login.html', error = 'Usuario o contraseÃ±a incorrectos')
     
     return render_template('login.html')
 
@@ -423,7 +555,7 @@ def upload_files():
     })
 
 
-# Obtención de los ODucmentos Globales de un Curso
+# ObtenciÃ³n de los ODucmentos Globales de un Curso
 
 @app.route('/api/documents/<course>')
 
@@ -505,7 +637,7 @@ def get_comments(document_id):
     return jsonify(comment_list)
 
 
-# Añadir comentarios
+# AÃ±adir comentarios
 
 @app.route('/api/add-comment', methods = ['POST'])
 
@@ -522,7 +654,7 @@ def add_comment():
     
     if not comment_text:
 
-        return jsonify({'error': 'El comentario no puede estar vacío'}), 400
+        return jsonify({'error': 'El comentario no puede estar vacÃ­o'}), 400
     
     if len(comment_text) > 500:
 
@@ -654,14 +786,42 @@ def get_courses():
 
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("SELECT name FROM courses ORDER BY name")
-    courses = [row[0] for row in c.fetchall()]
+    c.execute("""SELECT id, name, course_code, responsible_teacher, status
+                 FROM courses
+                 ORDER BY name""")
+    courses = []
+
+    for course_id, name, course_code, responsible_teacher, status in c.fetchall():
+
+        courses.append({
+            'id': course_id,
+            'name': name,
+            'course_code': course_code,
+            'responsible_teacher': responsible_teacher,
+            'status': status
+        })
+
     conn.close()
 
     return jsonify(courses)
 
 
-# Creación de curso
+@app.route('/api/teachers')
+
+@admin_required
+
+def get_teachers():
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT username FROM users WHERE role = 'profesor' ORDER BY username")
+    teachers = [row[0] for row in c.fetchall()]
+    conn.close()
+
+    return jsonify(teachers)
+
+
+# CreaciÃ³n de curso
 
 @app.route('/api/create-course', methods = ['POST'])
 
@@ -669,8 +829,11 @@ def get_courses():
 
 def create_course():
 
-    data = request.json
+    data = request.json or {}
     name = data.get('name', '').strip()
+    course_code = normalize_course_code(data.get('course_code', ''))
+    responsible_teacher = data.get('responsible_teacher', '').strip()
+    status = data.get('status', '').strip().lower()
     
     # Validaciones
 
@@ -681,9 +844,34 @@ def create_course():
     if len(name) > 100:
 
         return jsonify({'error': 'El nombre no puede exceder 100 caracteres'}), 400
+
+    if not course_code:
+
+        return jsonify({'error': 'El cÃ³digo del curso es requerido'}), 400
+
+    if len(course_code) > 30:
+
+        return jsonify({'error': 'El cÃ³digo del curso no puede exceder 30 caracteres'}), 400
+
+    if not responsible_teacher:
+
+        return jsonify({'error': 'El docente responsable es requerido'}), 400
+
+    if status not in VALID_SHELF_STATUS:
+
+        return jsonify({'error': 'El estado debe ser \"borrador\" o \"publicado\"'}), 400
     
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
+
+    # Verificar docente responsable
+
+    c.execute("SELECT role FROM users WHERE username = ?", (responsible_teacher,))
+    teacher_role = c.fetchone()
+
+    if not teacher_role or teacher_role[0] != 'profesor':
+        conn.close()
+        return jsonify({'error': 'El docente responsable no existe o no tiene rol profesor'}), 400
     
     # Verificar duplicados
 
@@ -691,18 +879,43 @@ def create_course():
     if c.fetchone()[0] > 0:
         conn.close()
         return jsonify({'error': 'Este curso ya existe'}), 400
+
+    c.execute("SELECT COUNT(*) FROM courses WHERE course_code = ? COLLATE NOCASE", (course_code,))
+    if c.fetchone()[0] > 0:
+        conn.close()
+        return jsonify({'error': 'Este cÃ³digo de curso ya existe'}), 400
     
     # Crear curso
 
     try:
 
         created_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute('INSERT INTO courses VALUES (NULL, ?, ?, ?)',
-                  (name, session.get('user'), created_date))
+        c.execute('''INSERT INTO courses
+                     (name, course_code, responsible_teacher, status, created_by, created_date)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (name, course_code, responsible_teacher, status, session.get('user'), created_date))
+
+        new_course_id = c.lastrowid
         conn.commit()
         conn.close()
 
-        return jsonify({'success': True, 'message': f'Curso "{name}" creado exitosamente'}), 201
+        return jsonify({
+            'success': True,
+            'message': f'Curso "{name}" creado exitosamente',
+            'course': {
+                'id': new_course_id,
+                'name': name,
+                'course_code': course_code,
+                'responsible_teacher': responsible_teacher,
+                'status': status
+            }
+        }), 201
+    
+    except sqlite3.IntegrityError as e:
+
+        conn.close()
+
+        return jsonify({'error': f'Error de integridad en base de datos: {str(e)}'}), 400
     
     except Exception as e:
 
@@ -788,3 +1001,4 @@ def delete_course(course):
 if __name__ == '__main__':
 
     app.run(debug = True, host = 'localhost', port = 5000)
+
