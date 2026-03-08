@@ -90,10 +90,11 @@ def init_db():
     # Tabla de Cursos o Shelves
 
     c.execute('''CREATE TABLE IF NOT EXISTS courses
-                 (id INTEGER PRIMARY KEY,
-                  name TEXT UNIQUE NOT NULL,
-                  created_by TEXT,
-                  created_date TEXT)''')
+             (id INTEGER PRIMARY KEY,
+              name TEXT UNIQUE NOT NULL,
+              created_by TEXT,
+              created_date TEXT,
+              status TEXT DEFAULT 'borrador')''')
     
 
     # Tabla de Documentos ((son globales por curso)
@@ -164,11 +165,11 @@ def init_db():
     if c.fetchone()[0] == 0:
 
         default_courses = [
-            ('Ingeniería de Software', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-            ('Ingeniería de Sistemas', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-            ('Ingeniería en Redes', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            ('Ingeniería de Software', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'publicado'),
+            ('Ingeniería de Sistemas', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'publicado'),
+            ('Ingeniería en Redes', 'admin', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'publicado')
         ]
-        c.executemany('INSERT INTO courses VALUES (NULL, ?, ?, ?)', default_courses)
+        c.executemany('INSERT INTO courses VALUES (NULL, ?, ?, ?, ?)', default_courses)
     
     conn.commit()
     conn.close()
@@ -230,6 +231,31 @@ def admin_required(f):
     
     return decorated_function
 
+def only_admin_required(f):
+
+    """Solo para admin"""
+
+    @wraps(f)
+
+    def decorated_function(*args, **kwargs):
+
+        if 'user' not in session:
+
+            return redirect(url_for('login'))
+        
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute("SELECT role FROM users WHERE username = ?", (session['user'],))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result or result[0] != 'admin':
+
+            return jsonify({'error': 'Acceso denegado. Solo administradores.'}), 403
+        
+        return f(*args, **kwargs)
+    
+    return decorated_function
 
 # --------------------------------------------------------
 # Permitir las tipos de archivos (.txt, .md, .docx, .pdf)
@@ -652,13 +678,25 @@ def get_history():
 
 def get_courses():
 
+    role = session.get('role')
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("SELECT name FROM courses ORDER BY name")
-    courses = [row[0] for row in c.fetchall()]
+
+    # Estudiantes solo ven cursos publicados
+
+    if role == 'estudiante':
+
+        c.execute("SELECT name FROM courses WHERE status = 'publicado' ORDER BY name")
+    else:
+        # Admin y Profesor ven todos los cursos con su estado
+        c.execute("SELECT name FROM courses ORDER BY name")
+    courses = c.fetchall()
     conn.close()
 
-    return jsonify(courses)
+    if role == 'estudiante':
+        return jsonify([row[0] for row in courses])
+    else:
+        return jsonify([{'name': row[0], 'status': row[1]} for row in courses])
 
 
 # Creación de curso
@@ -710,7 +748,48 @@ def create_course():
 
         return jsonify({'error': str(e)}), 500
 
+# Cambiar estado de un curso (solo Admin)
 
+@app.route('/api/courses/<course>/status', methods = ['PUT'])
+
+@only_admin_required
+
+def update_course_status(course):
+
+    data = request.json
+    new_status = data.get('status', '').strip()
+
+    if new_status not in ['borrador', 'publicado']:
+
+        return jsonify({'error': 'Estado inválido. Use "borrador" o "publicado"'}), 400
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+
+    # Verificar que el curso existe
+
+    c.execute("SELECT id FROM courses WHERE name = ?", (course,))
+
+    if not c.fetchone():
+
+        conn.close()
+
+        return jsonify({'error': 'Curso no encontrado'}), 404
+
+    try:
+
+        c.execute("UPDATE courses SET status = ? WHERE name = ?", (new_status, course))
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': f'Curso "{course}" ahora está en estado "{new_status}"'}), 200
+
+    except Exception as e:
+
+        conn.close()
+
+        return jsonify({'error': str(e)}), 500
+    
 # Eliminar curso
 
 @app.route('/api/delete-course/<course>', methods = ['DELETE'])
