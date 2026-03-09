@@ -482,6 +482,39 @@ def get_documents(course):
     
     return jsonify(documents)
 
+# Vista de documentos por curso (ruta alternativa requerida por DoD)
+@app.route('/api/documents/courses', methods=['GET'])
+
+@login_required
+
+def get_all_courses_documents():
+    
+    """Retorna la lista de archivos activos de todos los cursos"""
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''SELECT d.id, d.course, d.doc_hash, d.filename, d.file_hash, 
+                        d.upload_date, d.uploaded_by 
+                 FROM documents d
+                 ORDER BY d.course, d.upload_date DESC''')
+    
+    docs = c.fetchall()
+    conn.close()
+
+    documents = []
+    for doc_id, course, doc_hash, filename, file_hash, upload_date, uploaded_by in docs:
+        documents.append({
+            'id': doc_id,
+            'course': course,
+            'doc_hash': doc_hash,
+            'filename': filename,
+            'file_hash': file_hash,
+            'upload_date': upload_date,
+            'uploaded_by': uploaded_by
+        })
+
+    return jsonify(documents)
+
 
 # Obtener comentarios hechos por los estudiantes
 

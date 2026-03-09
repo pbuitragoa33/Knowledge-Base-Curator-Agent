@@ -254,7 +254,10 @@
                                     </p>
                                     <p class="document-date">${doc.upload_date}</p>
                                 </div>
-                                <button class="btn-delete-doc" onclick="deleteDocument(${doc.id})">🗑️</button>
+                                <div style="display:flex; flex-direction:column; gap:0.4rem; align-items:flex-end">
+                                    <button class="btn-delete-doc" onclick="deleteDocument(${doc.id})">🗑️ Eliminar</button>
+                                    <button class="btn btn-secondary btn-small" onclick="verHistorial('${doc.doc_hash}', '${doc.filename}')">🕓 Historial</button>
+                                </div>
                             </div>
                             <div class="document-comments-preview" id="comments-${doc.id}">
                                 <p class="loading">Cargando comentarios...</p>
@@ -268,9 +271,9 @@
                         <div class="document-item">
                             <p class="document-name">${doc.filename}</p>
                             <p class="document-info">
-                                Hash: <code>${doc.file_hash}</code>
+                                Hash doc: <code>${doc.doc_hash}</code> &nbsp;|&nbsp; Hash archivo: <code>${doc.file_hash}</code>
                             </p>
-                            <p class="document-date">${doc.upload_date}</p>
+                            <p class="document-date">📅 ${doc.upload_date}</p>
                         </div>
                     `).join('');
                 }
@@ -471,6 +474,68 @@
             } catch (error) {
                 console.error('Error:', error);
             }
+        }
+    </script>
+    
+    <!-- Modal Historial de Versiones -->
+    <div id="historialModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+        background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+        <div style="background:white; border-radius:8px; padding:2rem; width:90%; max-width:650px;
+                    max-height:80vh; overflow-y:auto; position:relative;">
+            <button onclick="closeHistorial()" style="position:absolute; top:1rem; right:1rem;
+                    background:none; border:none; font-size:1.5rem; cursor:pointer; color:#aaa">✕</button>
+            <h3 id="historialTitle" style="margin-bottom:1rem; color:#2c3e50"></h3>
+            <div id="historialContent"></div>
+        </div>
+    </div>
+
+    <script>
+        async function verHistorial(docHash, filename) {
+            document.getElementById('historialTitle').textContent = `🕓 Historial: ${filename}`;
+            document.getElementById('historialContent').innerHTML = '<p>Cargando...</p>';
+            document.getElementById('historialModal').style.display = 'flex';
+
+            try {
+                const res = await fetch(`/api/history/document/${docHash}`);
+                const data = await res.json();
+
+                if (data.error) {
+                    document.getElementById('historialContent').innerHTML = 
+                        `<p style="color:red">${data.error}</p>`;
+                    return;
+                }
+
+                if (!data.history || !data.history.length) {
+                    document.getElementById('historialContent').innerHTML = 
+                        '<p style="color:#aaa; text-align:center">No hay historial disponible.</p>';
+                    return;
+                }
+
+                let html = `<p style="margin-bottom:1rem; color:#666">
+                    Total de versiones: <strong>${data.total_versions}</strong>
+                </p>`;
+
+                data.history.forEach(v => {
+                    html += `
+                        <div style="border-left:3px solid #3498db; padding:0.7rem 1rem;
+                                    margin-bottom:0.8rem; background:#f8f9fa; border-radius:0 5px 5px 0">
+                            <div style="font-weight:bold; color:#3498db">Versión ${v.version_number}</div>
+                            <div>Hash: <code>${v.doc_hash}</code></div>
+                            <div>📅 Fecha: ${v.upload_date}</div>
+                            <div>👤 Subido por: ${v.uploaded_by}</div>
+                        </div>`;
+                });
+
+                document.getElementById('historialContent').innerHTML = html;
+
+            } catch (e) {
+                document.getElementById('historialContent').innerHTML = 
+                    '<p style="color:red">Error al cargar el historial.</p>';
+            }
+        }
+
+        function closeHistorial() {
+            document.getElementById('historialModal').style.display = 'none';
         }
     </script>
 </body>
