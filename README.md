@@ -14,32 +14,35 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 
 ## Características Principales
 
-* Sistema de autenticación con 3 roles (Admin, Profesor, Estudiante)  
-* Crear/eliminar cursos (solo Admin y Profesores)  
-* Documentos globales, estos ppersisten en la base de datos  
-* Subir documentos (PDF, MD, DOCX, TXT) mediante drag & drop  
-* Comentarios de Estudiantes que son visibles solo para profesor/admin  
-* Hash SHA256 para cada documento y cada subida  
-* Historial de cambios con fechas  
-* Interfaz diferenciada por rol de usuario  
-* Confirmación antes de eliminar  
-* Interfaz moderna y responsiva  
+* Sistema de autenticación con 3 roles (Admin, Profesor, Estudiante) y página de registro (Signup).
+* Crear/eliminar cursos y asignación de múltiples profesores por curso.
+* Documentos globales y persistentes en la base de datos local SQLite.
+* Subir documentos (PDF, MD, DOCX, TXT) mediante drag & drop.
+* Sistema de versionado de documentos y visualización de diferencias (Diff) para documentos de texto/markdown.
+* Descarga directa de archivos de las distintas versiones subidas.
+* Comentarios de Estudiantes que son visibles solo para profesor/admin.
+* Hash SHA256 para cada documento y cada subida.
+* Historial de cambios con fechas.
+* Interfaz diferenciada por rol de usuario.
+* Confirmación antes de eliminar.
+* Interfaz moderna y responsiva.
 
 ## Estructura del Proyecto
 
 ```
-Testeo Proyecto/
+Knowledge Base Curator Agent/
 ├── app.py                 # Servidor Flask con toda la lógica (Orquestador)
 ├── requirements.txt       # Dependencias Python
-├── database.db           # Base de datos 
+├── database.db           # Base de datos SQLite
 ├── templates/
 │   ├── login.html        # Página de autenticación
+│   ├── signup.html       # Página de registro de usuarios
 │   ├── index.html        # Página de gestión de cursos
 │   └── upload.html       # Página de documentos y comentarios
 ├── static/
 │   └── style.css         # Estilos CSS
-├── run.bat               # Script de ejecución automática 
-└── run.ps1               # Script PowerShell alternativo 
+├── run.bat               # Script de ejecución automática (Windows)
+└── run.ps1               # Script PowerShell alternativo
 ```
 
 ## Instalación y Ejecución
@@ -184,48 +187,58 @@ Cada comentario incluye:
 ## Funcionalidades por Rol
 
 ### Admin
-- Crear cursos
-- Eliminar cursos (con confirmación)
-- Subir documentos al curso
-- Eliminar documentos
-- Ver comentarios de estuudiantes
-- Cambiar de curso
-- Cerrar sesión
+- Crear cursos y eliminar cursos (con confirmación)
+- Asignar profesores a cursos
+- Subir documentos al curso y eliminar documentos
+- Consultar historial de documentos y comparar versiones (Diff)
+- Descargar documentos
+- Ver comentarios de estudiantes
+- Cambiar de curso y cerrar sesión
 
 ### Profesor
-- Crear cursos
-- Eliminar cursos (con confirmación)
-- Subir documentos al curso
-- Eliminar docuemntos
+- Crear cursos y eliminar cursos propios (con confirmación)
+- Subir documentos al curso y eliminar documentos
+- Consultar historial de documentos y comparar versiones
+- Descargar documentos
 - Ver comentarios de estudiantes
-- Cambiar de curso
-- Cerrar sesión
+- Cambiar de curso y cerrar sesión
 
 ### Estudiante
-- Ver cursos disponibles
-- Seleccionar e ingresar a un curso
-- Ver documentos del curso
+- Registrarse en la plataforma
+- Ver cursos disponibles, seleccionar e ingresar a un curso
+- Ver documentos del curso y descargarlos
 - Comentar sobre documentos (máx 500 caracteres)
-- Cambiar de curso
-- Cerrar sesión
-- NO puede: Crear/eliminar cursos, subir/eliminar documentos, ver comentarios
+- Ver historial básico o versiones
+- Cambiar de curso y cerrar sesión
+- NO puede: Crear/eliminar cursos, asignar profesores, subir/eliminar documentos, ver comentarios de otros estudiantes
 
 
 ## API Endpoints
 
 ### Autenticación
-- `POST /login` - Inicia sesión
+- `GET/POST /login` - Inicia sesión
+- `GET/POST /signup` - Registro temporal/creación de cuentas
 - `GET /logout` - Cierra sesión
 
-### Cursos
+### Cursos y Profesores
 - `GET /api/courses` - Obtiene lista de cursos
 - `POST /api/create-course` - Crea un nuevo curso (admin/profesor)
 - `DELETE /api/delete-course/<course>` - Elimina un curso (admin/profesor)
+- `GET /api/teachers` - Obtiene una lista de profesores registrados
+- `GET /api/course-professors/<course>` - Obtiene los profesores asignados a un curso
+- `POST /api/assign-professor` - Asigna un nuevo profesor a un curso
 
 ### Documentos
 - `GET /api/documents/<course>` - Obtiene documentos del curso
 - `POST /api/upload` - Sube documentos (admin/profesor)
 - `DELETE /api/delete-document/<id>` - Elimina un documento (admin/profesor)
+- `GET /api/download/<int:document_id>` - Descarga la última versión de un documento
+- `GET /api/download-version/<int:version_id>` - Descarga una versión específica de un documento
+
+### Historial y Versiones
+- `GET /api/history` - Obtiene el historial global de todas las subidas
+- `GET /api/document-history/<filename>` - Obtiene el historial de versiones para un documento específico
+- `GET /api/document-diff/<document_id>/<version1>/<version2>` - Genera un diff entre dos versiones de un archivo de texto o markdown
 
 ### Comentarios
 - `GET /api/comments/<document_id>` - Obtiene comentarios (admin/profesor)
