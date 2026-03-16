@@ -423,3 +423,8 @@ FodyWeavers.xsd
 venv_project/
 __pycache__/
 *.pyc
+
+
+# Base de datos
+
+*.db
