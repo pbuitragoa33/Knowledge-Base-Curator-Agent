@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crear Cuenta - Curador de Conocimiento Asistido</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .signup-container {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        
+        .form-group-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        .form-group-row .form-group {
+            margin-bottom: 0;
+        }
+        
+        .password-match {
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        
+        .password-match.valid {
+            color: #27ae60;
+        }
+        
+        .password-match.invalid {
+            color: #e74c3c;
+        }
+        
+        .role-select {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .role-option {
+            position: relative;
+        }
+        
+        .role-option input[type="radio"] {
+            display: none;
+        }
+        
+        .role-option label {
+            display: block;
+            padding: 15px;
+            border: 2px solid #bdc3c7;
+            border-radius: 5px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+        
+        .role-option input[type="radio"]:checked + label {
+            background-color: #3498db;
+            color: white;
+            border-color: #2980b9;
+        }
+        
+        .role-option label:hover {
+            border-color: #3498db;
+        }
+        
+        .signup-footer {
+            text-align: center;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #ecf0f1;
+        }
+        
+        .signup-footer p {
+            margin: 0;
+            font-size: 14px;
+        }
+        
+        .signup-footer a {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .signup-footer a:hover {
+            text-decoration: underline;
+        }
+        
+        .password-requirements {
+            background-color: #ecf0f1;
+            padding: 12px;
+            border-radius: 5px;
+            font-size: 12px;
+            margin-bottom: 15px;
+            color: #34495e;
+        }
+        
+        .requirement {
+            margin: 5px 0;
+        }
+        
+        .requirement.met {
+            color: #27ae60;
+        }
+        
+        .requirement.unmet {
+            color: #e74c3c;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="signup-container">
+            <div class="login-card">
+                <div class="login-header">
+                    <h1>Crear Cuenta</h1>
+                    <p>Regístrate para acceder a la plataforma</p>
+                </div>
+
+                {% if error %}
+                    <div class="error-message">{{ error }}</div>
+                {% endif %}
+
+                <form method="POST" class="login-form" id="signupForm">
+                    <!-- Selección de Rol -->
+                    <div class="form-group">
+                        <label>Selecciona tu rol</label>
+                        <div class="role-select">
+                            <div class="role-option">
+                                <input type="radio" id="role-admin" name="role" value="admin" required>
+                                <label for="role-admin">👨‍💼 Admin</label>
+                            </div>
+                            <div class="role-option">
+                                <input type="radio" id="role-profesor" name="role" value="profesor" required>
+                                <label for="role-profesor">👨‍🏫 Profesor</label>
+                            </div>
+                            <div class="role-option">
+                                <input type="radio" id="role-estudiante" name="role" value="estudiante" required>
+                                <label for="role-estudiante">👨‍🎓 Estudiante</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Email -->
+                    <div class="form-group">
+                        <label for="email">Correo Electrónico</label>
+                        <input type="email" id="email" name="email" required placeholder="ejemplo@correo.com">
+                        <small style="color: #7f8c8d; display: block; margin-top: 5px;">
+                            Será tu email único en el sistema
+                        </small>
+                    </div>
+
+                    <!-- Username -->
+                    <div class="form-group">
+                        <label for="username">Nombre de Usuario</label>
+                        <input type="text" id="username" name="username" required placeholder="nombre_usuario">
+                        <small style="color: #7f8c8d; display: block; margin-top: 5px;">
+                            Se mostrará cuando el admin asigne cursos o cuando agregues estudiantes
+                        </small>
+                    </div>
+
+                    <!-- Contraseña -->
+                    <div class="form-group">
+                        <label for="password">Contraseña</label>
+                        <input type="password" id="password" name="password" required placeholder="Mín. 8 caracteres">
+                        
+                        <div class="password-requirements">
+                            <div class="requirement unmet" id="req-length">
+                                ✓ Entre 8 y 20 caracteres
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Confirmar Contraseña -->
+                    <div class="form-group">
+                        <label for="password_confirm">Confirmar Contraseña</label>
+                        <input type="password" id="password_confirm" name="password_confirm" required placeholder="Repite tu contraseña">
+                        <div class="password-match" id="passwordMatch"></div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-block">Crear Cuenta</button>
+                </form>
+
+                <div class="signup-footer">
+                    <p>¿Ya tienes cuenta? <a href="{{ url_for('login') }}">Inicia sesión aquí</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const passwordInput = document.getElementById('password');
+        const passwordConfirmInput = document.getElementById('password_confirm');
+        const passwordMatchDiv = document.getElementById('passwordMatch');
+        const reqLengthDiv = document.getElementById('req-length');
+        const form = document.getElementById('signupForm');
+
+        // Validar longitud de contraseña
+        passwordInput.addEventListener('input', function() {
+            const length = this.value.length;
+            const isValid = length >= 8 && length <= 20;
+            
+            if (isValid) {
+                reqLengthDiv.classList.remove('unmet');
+                reqLengthDiv.classList.add('met');
+            } else {
+                reqLengthDiv.classList.remove('met');
+                reqLengthDiv.classList.add('unmet');
+            }
+            
+            checkPasswordMatch();
+        });
+
+        // Validar coincidencia de contraseñas
+        passwordConfirmInput.addEventListener('input', checkPasswordMatch);
+
+        function checkPasswordMatch() {
+            const password = passwordInput.value;
+            const passwordConfirm = passwordConfirmInput.value;
+
+            if (passwordConfirm.length === 0) {
+                passwordMatchDiv.textContent = '';
+                return;
+            }
+
+            if (password === passwordConfirm) {
+                passwordMatchDiv.textContent = '✓ Las contraseñas coinciden';
+                passwordMatchDiv.classList.remove('invalid');
+                passwordMatchDiv.classList.add('valid');
+            } else {
+                passwordMatchDiv.textContent = '✗ Las contraseñas no coinciden';
+                passwordMatchDiv.classList.remove('valid');
+                passwordMatchDiv.classList.add('invalid');
+            }
+        }
+
+        // Validar email en tiempo real
+        const emailInput = document.getElementById('email');
+        emailInput.addEventListener('blur', function() {
+            const email = this.value;
+            const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+            
+            if (email && !emailRegex.test(email)) {
+                this.style.borderColor = '#e74c3c';
+                this.title = 'Por favor ingresa un correo válido';
+            } else {
+                this.style.borderColor = '#bdc3c7';
+                this.title = '';
+            }
+        });
+
+        // Validar formulario antes de enviar
+        form.addEventListener('submit', function(e) {
+            const password = passwordInput.value;
+            const passwordConfirm = passwordConfirmInput.value;
+            const role = document.querySelector('input[name="role"]:checked');
+            const email = emailInput.value;
+            const username = document.getElementById('username').value;
+
+            if (!role) {
+                e.preventDefault();
+                alert('Por favor selecciona un rol');
+                return;
+            }
+
+            if (!email || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email)) {
+                e.preventDefault();
+                alert('Por favor ingresa un correo válido');
+                return;
+            }
+
+            if (!username || username.trim() === '') {
+                e.preventDefault();
+                alert('Por favor ingresa un nombre de usuario');
+                return;
+            }
+
+            if (password.length < 8 || password.length > 20) {
+                e.preventDefault();
+                alert('La contraseña debe tener entre 8 y 20 caracteres');
+                return;
+            }
+
+            if (password !== passwordConfirm) {
+                e.preventDefault();
+                alert('Las contraseñas no coinciden');
+                return;
+            }
+        });
+    </script>
+</body>
+</html>
