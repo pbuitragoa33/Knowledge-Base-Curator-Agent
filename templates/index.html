@@ -30,7 +30,8 @@
 
             {% if session.role in ['admin', 'profesor'] %}
             <div class="admin-section">
-                <h3>Administracion de Shelves</h3>
+                {% if session.role == 'admin' %}
+                <h3>Administración de Shelves</h3>
 
                 <div class="create-course-form">
                     <input type="text" id="courseName" placeholder="Nombre del curso (max 100 caracteres)" maxlength="100">
@@ -44,7 +45,18 @@
                     </select>
                     <button id="createBtn" class="btn btn-success" type="button">Crear Shelf</button>
                 </div>
+                {% else %}
+                <h3>Administración de Estudiantes</h3>
+                <p class="subtitle-sm">Selecciona un curso arriba para gestionar sus estudiantes</p>
 
+                <div class="students-management" id="studentsManagement" style="display: none;">
+                    <input type="hidden" id="courseForStudent">
+                    <input type="text" id="studentSearch" placeholder="Buscar estudiante (nombre de usuario)...">
+                    <button id="addStudentBtn" class="btn btn-success" type="button">Agregar Estudiante</button>
+                    <div id="studentsList" class="students-list" style="margin-top: 15px;"></div>
+                </div>
+                {% endif %}
+                
                 <div id="message" class="message"></div>
             </div>
             {% endif %}
@@ -53,7 +65,8 @@
 
     <script>
         let selectedCourse = null;
-        const isAdmin = {{ 'true' if session.role in ['admin', 'profesor'] else 'false' }};
+        const role = '{{ session.role }}';
+        const isAdmin = {{ 'true' if session.role == 'admin' else 'false' }};
 
         function escapeHtml(value) {
             const temp = document.createElement('div');
@@ -91,7 +104,7 @@
                                     <p class="course-meta">Docente: ${escapeHtml(course.responsible_teacher)} | Estado: ${escapeHtml(formatStatus(course.status))}</p>
                                 </div>
                             </div>
-                            ${isAdmin ? `<button class="btn-delete-course" type="button" data-course="${encodeURIComponent(course.name)}">X</button>` : ''}
+                            ${isAdmin === 'true' ? `<button class="btn-delete-course" type="button" data-course="${encodeURIComponent(course.name)}">X</button>` : ''}
                         </div>
                     </div>
                 `).join('');
@@ -152,13 +165,11 @@
             this.classList.add('selected');
             selectedCourse = decodeURIComponent(this.dataset.course);
             document.getElementById('acceptBtn').disabled = false;
-        }
 
-        document.getElementById('acceptBtn').addEventListener('click', function() {
-            if (selectedCourse) {
-                window.location.href = `/upload/${encodeURIComponent(selectedCourse)}`;
+            if (role === 'profesor') {
+                loadStudentsForCourse(selectedCourse);
             }
-        });
+        }
 
         async function createCourse() {
             const name = document.getElementById('courseName').value.trim();
@@ -257,7 +268,19 @@
         }
 
         async function initPage() {
-            if (isAdmin) {
+            const acceptBtn = document.getElementById('acceptBtn');
+
+            if (acceptBtn) {
+                acceptBtn.addEventListener('click', function() {
+                    if (!selectedCourse) {
+                        return;
+                    }
+
+                    window.location.href = `/upload/${encodeURIComponent(selectedCourse)}`;
+                });
+            }
+            
+            if (role === 'admin') {
                 await loadTeachers();
                 document.getElementById('createBtn').addEventListener('click', createCourse);
                 document.getElementById('courseCode').addEventListener('input', function() {
@@ -271,9 +294,103 @@
                         }
                     });
                 });
+                
+            } else if (role === 'profesor') {
+                document.getElementById('addStudentBtn').addEventListener('click', addStudent);
             }
 
             await loadCourses();
+        }
+
+        async function loadStudentsForCourse(courseName) {
+            try {
+                const response = await fetch(`/api/available-students/${encodeURIComponent(courseName)}`);
+                const availableStudents = await response.json();
+
+                const mgmtDiv = document.getElementById('studentsManagement');
+                if (mgmtDiv) {
+                    mgmtDiv.style.display = 'block';
+                    document.getElementById('courseForStudent').value = courseName;
+                    await loadStudentsInCourse(courseName);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        async function loadStudentsInCourse(courseName) {
+            try {
+                const response = await fetch(`/api/course-students/${encodeURIComponent(courseName)}`);
+                const students = await response.json();
+                const container = document.getElementById('studentsList');
+
+                if (students.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay estudiantes en este curso</p>';
+                    return;
+                }
+
+                container.innerHTML = '<h4 style="color: #333; margin-bottom: 10px;">Estudiantes inscritos:</h4>' +
+                    students.map(student => `
+                        <div class="assigned-item">
+                            <span>${escapeHtml(student.username)}</span>
+                            <button class="btn-remove" onclick="removeStudent('${escapeHtml(courseName)}', '${escapeHtml(student.username)}')">Remover</button>
+                        </div>
+                    `).join('');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        async function addStudent() {
+            const studentSearch = document.getElementById('studentSearch').value.trim();
+            const courseName = selectedCourse;
+
+            if (!studentSearch) {
+                document.getElementById('message').innerHTML = '<div class="error-message">Ingresa el nombre del estudiante</div>';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/add-student', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ course_name: courseName, student_username: studentSearch })
+                });
+
+                const data = await response.json();
+                const messageDiv = document.getElementById('message');
+
+                if (response.ok) {
+                    messageDiv.innerHTML = '<div class="success-message">Estudiante agregado correctamente</div>';
+                    document.getElementById('studentSearch').value = '';
+                    await loadStudentsInCourse(courseName);
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 2000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error-message">${data.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = `<div class="error-message">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function removeStudent(courseName, student) {
+            if (!confirm(`¿Remover estudiante ${student} del curso?`)) return;
+
+            try {
+                const response = await fetch('/api/remove-student', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ course_name: courseName, student_username: student })
+                });
+
+                if (response.ok) {
+                    await loadStudentsInCourse(courseName);
+                } else {
+                    alert('Error al remover estudiante');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
         }
 
         initPage();
