@@ -18,8 +18,28 @@
         </div>
 
         <div id="contentContainer"></div>
+    </div>
 
-        <div id="contentContainer"></div>
+    <!-- Modal para Historial -->
+    <div id="historyModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Historial de Versiones</h2>
+                <button class="modal-close" onclick="closeHistoryModal()">&times;</button>
+            </div>
+            <div id="historyBody" class="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Modal para Diff -->
+    <div id="diffModal" class="modal" style="display: none;">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h2>Comparar Versiones</h2>
+                <button class="modal-close" onclick="closeDiffModal()">&times;</button>
+            </div>
+            <div id="diffBody" class="modal-body"></div>
+        </div>
     </div>
 
     <script>
@@ -38,10 +58,8 @@
             const container = document.getElementById('contentContainer');
             container.innerHTML = `
                 <div class="content-grid">
-                    <!-- Sección de Carga de Documentos -->
                     <div class="card upload-card">
                         <h2>Subir Documentos del Curso</h2>
-                        
                         <div id="dropZone" class="drop-zone">
                             <div class="drop-zone-content">
                                 <div class="drop-icon">📤</div>
@@ -51,25 +69,18 @@
                             </div>
                             <input type="file" id="fileInput" multiple accept=".pdf,.md,.docx,.txt" style="display: none;">
                         </div>
-
                         <div id="fileList" class="file-list" style="display: none;">
                             <h3>Archivos a subir:</h3>
                             <div id="selectedFiles"></div>
                             <button id="uploadBtn" class="btn btn-success">Subir Documentos</button>
                             <button id="clearBtn" class="btn btn-danger">Limpiar</button>
                         </div>
-
                         <div id="uploadProgress" class="upload-progress" style="display: none;">
                             <p>Subiendo documentos...</p>
-                            <div class="progress-bar">
-                                <div id="progressFill" class="progress-fill"></div>
-                            </div>
+                            <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
                         </div>
-
                         <div id="uploadMessage" class="upload-message"></div>
                     </div>
-
-                    <!-- Sección de Documentos -->
                     <div class="card documents-card">
                         <h2>Documentos del Curso</h2>
                         <div id="documentsContainer" class="documents-list">
@@ -77,8 +88,6 @@
                         </div>
                     </div>
                 </div>
-
-                <!-- Sección de Comentarios -->
                 <div class="card comments-card">
                     <h2>Comentarios de Estudiantes</h2>
                     <div id="commentsContainer" class="comments-list">
@@ -86,7 +95,6 @@
                     </div>
                 </div>
             `;
-
             setupFileUpload();
             await loadDocuments();
             await loadAllComments();
@@ -96,22 +104,18 @@
             const container = document.getElementById('contentContainer');
             container.innerHTML = `
                 <div class="content-grid">
-                    <!-- Sección de Documentos -->
                     <div class="card documents-card">
                         <h2>Documentos del Curso</h2>
                         <div id="documentsContainer" class="documents-list">
                             <p class="loading">Cargando documentos...</p>
                         </div>
                     </div>
-
-                    <!-- Sección de Comentarios -->
                     <div class="card comments-form-card">
                         <h2>Agregar Comentario</h2>
                         <div id="commentFormContainer"></div>
                     </div>
                 </div>
             `;
-
             await loadDocuments();
             setupCommentForm();
         }
@@ -125,38 +129,17 @@
             const clearBtn = document.getElementById('clearBtn');
             const uploadProgress = document.getElementById('uploadProgress');
             const uploadMessage = document.getElementById('uploadMessage');
-
             let files = [];
 
             dropZone.addEventListener('click', () => fileInput.click());
-            
-            dropZone.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                dropZone.classList.add('dragover');
-            });
-
-            dropZone.addEventListener('dragleave', () => {
-                dropZone.classList.remove('dragover');
-            });
-
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                dropZone.classList.remove('dragover');
-                handleFiles(e.dataTransfer.files);
-            });
-
-            fileInput.addEventListener('change', (e) => {
-                handleFiles(e.target.files);
-            });
+            dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+            dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); });
+            dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
+            fileInput.addEventListener('change', (e) => { handleFiles(e.target.files); });
 
             function handleFiles(newFiles) {
                 files = Array.from(newFiles);
-                
-                if (files.length === 0) {
-                    fileList.style.display = 'none';
-                    return;
-                }
-
+                if (files.length === 0) { fileList.style.display = 'none'; return; }
                 selectedFiles.innerHTML = files.map((file, index) => `
                     <div class="file-item">
                         <span class="file-name">${file.name}</span>
@@ -164,18 +147,13 @@
                         <button class="btn-remove" onclick="removeFile(${index})">✕</button>
                     </div>
                 `).join('');
-
                 fileList.style.display = 'block';
                 uploadMessage.innerHTML = '';
             }
 
             window.removeFile = function(index) {
                 files.splice(index, 1);
-                if (files.length === 0) {
-                    fileList.style.display = 'none';
-                } else {
-                    handleFiles(files);
-                }
+                if (files.length === 0) { fileList.style.display = 'none'; } else { handleFiles(files); }
             };
 
             clearBtn.addEventListener('click', () => {
@@ -187,23 +165,14 @@
 
             uploadBtn.addEventListener('click', async () => {
                 if (files.length === 0) return;
-
                 const formData = new FormData();
-                files.forEach(file => {
-                    formData.append('files[]', file);
-                });
-
+                files.forEach(file => { formData.append('files[]', file); });
                 uploadProgress.style.display = 'block';
                 uploadBtn.disabled = true;
 
                 try {
-                    const response = await fetch('/api/upload', {
-                        method: 'POST',
-                        body: formData
-                    });
-
+                    const response = await fetch('/api/upload', { method: 'POST', body: formData });
                     const data = await response.json();
-
                     uploadProgress.style.display = 'none';
 
                     if (response.ok) {
@@ -234,7 +203,6 @@
             try {
                 const response = await fetch(`/api/documents/${encodeURIComponent(course)}`);
                 const documents = await response.json();
-
                 const container = document.getElementById('documentsContainer');
                 
                 if (documents.length === 0) {
@@ -254,29 +222,36 @@
                                     </p>
                                     <p class="document-date">${doc.upload_date}</p>
                                 </div>
-                                <button class="btn-delete-doc" onclick="deleteDocument(${doc.id})">🗑️</button>
+                                <div class="document-actions">
+                                    <button class="btn-icon" title="Ver historial" onclick="openHistoryModal('${doc.filename}', ${doc.id})">📋</button>
+                                    <button class="btn-delete-doc" title="Eliminar" onclick="deleteDocument(${doc.id})">🗑️</button>
+                                </div>
                             </div>
                             <div class="document-comments-preview" id="comments-${doc.id}">
                                 <p class="loading">Cargando comentarios...</p>
                             </div>
                         </div>
                     `).join('');
-
                     documents.forEach(doc => loadDocumentComments(doc.id));
                 } else {
                     container.innerHTML = documents.map(doc => `
                         <div class="document-item">
-                            <p class="document-name">${doc.filename}</p>
-                            <p class="document-info">
-                                Hash: <code>${doc.file_hash}</code>
-                            </p>
-                            <p class="document-date">${doc.upload_date}</p>
+                            <div class="document-header">
+                                <div>
+                                    <p class="document-name">${doc.filename}</p>
+                                    <p class="document-info">Hash: <code>${doc.file_hash}</code></p>
+                                    <p class="document-date">${doc.upload_date}</p>
+                                </div>
+                                <div class="document-actions">
+                                    <button class="btn-icon" title="Ver historial" onclick="openHistoryModal('${doc.filename}', ${doc.id})">📋</button>
+                                    <button class="btn-icon" title="Descargar" onclick="downloadDocument(${doc.id})">⬇️</button>
+                                </div>
+                            </div>
                         </div>
                     `).join('');
                 }
             } catch (error) {
-                document.getElementById('documentsContainer').innerHTML = 
-                    `<p class="error-message">Error: ${error.message}</p>`;
+                document.getElementById('documentsContainer').innerHTML = `<p class="error-message">Error: ${error.message}</p>`;
             }
         }
 
@@ -284,11 +259,9 @@
             try {
                 const response = await fetch(`/api/comments/${docId}`);
                 if (!response.ok) {
-                    document.getElementById(`comments-${docId}`).innerHTML = 
-                        '<p class="no-data">Sin comentarios</p>';
+                    document.getElementById(`comments-${docId}`).innerHTML = '<p class="no-data">Sin comentarios</p>';
                     return;
                 }
-
                 const comments = await response.json();
                 const container = document.getElementById(`comments-${docId}`);
                 
@@ -317,7 +290,6 @@
             try {
                 const docsResponse = await fetch(`/api/documents/${encodeURIComponent(course)}`);
                 const documents = await docsResponse.json();
-
                 const container = document.getElementById('commentsContainer');
                 
                 if (documents.length === 0) {
@@ -331,10 +303,7 @@
                         const response = await fetch(`/api/comments/${doc.id}`);
                         if (response.ok) {
                             const comments = await response.json();
-                            allComments.push({
-                                document: doc,
-                                comments: comments
-                            });
+                            allComments.push({ document: doc, comments: comments });
                         }
                     } catch (e) {
                         console.error('Error loading comments for doc', doc.id);
@@ -367,12 +336,8 @@
 
         window.deleteDocument = async function(docId) {
             if (!confirm('¿Estás seguro de eliminar este documento?')) return;
-
             try {
-                const response = await fetch(`/api/delete-document/${docId}`, {
-                    method: 'DELETE'
-                });
-
+                const response = await fetch(`/api/delete-document/${docId}`, { method: 'DELETE' });
                 if (response.ok) {
                     alert('Documento eliminado');
                     loadDocuments();
@@ -381,6 +346,145 @@
                     const data = await response.json();
                     alert('Error: ' + data.error);
                 }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        };
+
+        window.openHistoryModal = async function(filename, docId) {
+            const modal = document.getElementById('historyModal');
+            const body = document.getElementById('historyBody');
+            body.innerHTML = '<p class="loading">Cargando historial...</p>';
+            
+            try {
+                const response = await fetch(`/api/document-history/${filename}`);
+                if (!response.ok) {
+                    body.innerHTML = '<p class="error-message">Error al cargar historial</p>';
+                    return;
+                }
+
+                const data = await response.json();
+                const versions = data.versions;
+
+                if (versions.length === 0) {
+                    body.innerHTML = '<p class="no-data">No hay versiones disponibles</p>';
+                } else {
+                    body.innerHTML = `
+                        <div class="versions-list">
+                            ${versions.map((v, idx) => `
+                                <div class="version-item">
+                                    <div class="version-header">
+                                        <span class="version-number">Versión ${v.version_number}</span>
+                                        <span class="version-date">${v.upload_date}</span>
+                                        <span class="version-author">${v.uploaded_by}</span>
+                                    </div>
+                                    <div class="version-actions">
+                                        <button class="btn btn-sm btn-info" onclick="downloadVersion(${v.version_id})">Descargar</button>
+                                        ${idx > 0 ? `<button class="btn btn-sm btn-warning" onclick="compareDiff(${docId}, ${v.version_number}, ${versions[idx-1].version_number})">Comparar</button>` : ''}
+                                    </div>
+                                    <p class="version-hash">Hash: <code>${v.file_hash}</code></p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                body.innerHTML = `<p class="error-message">Error: ${error.message}</p>`;
+            }
+            modal.style.display = 'block';
+        };
+
+        window.closeHistoryModal = function() {
+            document.getElementById('historyModal').style.display = 'none';
+        };
+
+        window.closeDiffModal = function() {
+            document.getElementById('diffModal').style.display = 'none';
+        };
+
+        window.compareDiff = async function(docId, v1, v2) {
+            const modal = document.getElementById('diffModal');
+            const body = document.getElementById('diffBody');
+            body.innerHTML = '<p class="loading">Comparando versiones...</p>';
+            
+            try {
+                const response = await fetch(`/api/document-diff/${docId}/${v1}/${v2}`);
+                if (!response.ok) {
+                    body.innerHTML = '<p class="error-message">Error al comparar versiones</p>';
+                    return;
+                }
+
+                const data = await response.json();
+                const diff = data.diff;
+
+                body.innerHTML = `
+                    <div class="diff-container">
+                        <p class="diff-title">Comparación: Versión ${v1} vs Versión ${v2}</p>
+                        <div class="diff-stats">
+                            <div class="stat added">
+                                <span class="stat-label">Líneas Añadidas:</span>
+                                <span class="stat-value">${diff.added}</span>
+                            </div>
+                            <div class="stat removed">
+                                <span class="stat-label">Líneas Eliminadas:</span>
+                                <span class="stat-value">${diff.removed}</span>
+                            </div>
+                            <div class="stat same">
+                                <span class="stat-label">Líneas Sin Cambio:</span>
+                                <span class="stat-value">${diff.same}</span>
+                            </div>
+                            <div class="stat total">
+                                <span class="stat-label">Total de Líneas:</span>
+                                <span class="stat-value">${diff.total}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                body.innerHTML = `<p class="error-message">Error: ${error.message}</p>`;
+            }
+            modal.style.display = 'block';
+        };
+
+        window.downloadDocument = async function(docId) {
+            try {
+                const response = await fetch(`/api/download/${docId}`);
+                if (!response.ok) {
+                    alert('Error al descargar archivo');
+                    return;
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `document_${docId}`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        };
+
+        window.downloadVersion = async function(versionId) {
+            try {
+                const response = await fetch(`/api/download-version/${versionId}`);
+                if (!response.ok) {
+                    alert('Error al descargar archivo');
+                    return;
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `version_${versionId}`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
             } catch (error) {
                 alert('Error: ' + error.message);
             }
@@ -398,7 +502,6 @@
                     <button id="submitComment" class="btn btn-success">Enviar Comentario</button>
                 </div>
             `;
-
             loadDocumentsForComments();
         }
 
@@ -406,7 +509,6 @@
             try {
                 const response = await fetch(`/api/documents/${encodeURIComponent(course)}`);
                 const documents = await response.json();
-
                 const select = document.getElementById('documentSelect');
                 const docSelector = document.getElementById('docSelector');
                 
@@ -449,10 +551,7 @@
                         const response = await fetch('/api/add-comment', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                document_id: docId,
-                                comment_text: text
-                            })
+                            body: JSON.stringify({ document_id: docId, comment_text: text })
                         });
 
                         if (response.ok) {
@@ -472,6 +571,13 @@
                 console.error('Error:', error);
             }
         }
+
+        window.onclick = function(event) {
+            const historyModal = document.getElementById('historyModal');
+            const diffModal = document.getElementById('diffModal');
+            if (event.target === historyModal) { historyModal.style.display = 'none'; }
+            if (event.target === diffModal) { diffModal.style.display = 'none'; }
+        };
     </script>
 </body>
 </html>

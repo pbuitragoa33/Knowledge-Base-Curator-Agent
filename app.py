@@ -5,7 +5,7 @@
 # Librerias 
 # ------------
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
 from werkzeug.utils import secure_filename
 import os
 import sqlite3
@@ -14,6 +14,7 @@ import json
 from datetime import datetime
 from functools import wraps
 import shutil
+import re
 
 
 # ----------
@@ -64,11 +65,40 @@ def verify_password(password, hashed):
     return hash_password(password) == hashed
 
 
+
+def validate_email(email):
+    """Valida email con expresión regular"""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
 def normalize_course_code(course_code):
 
     """Normaliza el cÃ³digo del curso."""
 
     return str(course_code or '').strip().upper()
+
+
+def professor_can_manage_course(cursor, course_name, professor_username):
+
+    """Valida si el profesor puede gestionar estudiantes del curso."""
+
+    cursor.execute(
+        """SELECT 1 FROM courses
+           WHERE name = ? AND responsible_teacher = ?""",
+        (course_name, professor_username)
+    )
+
+    if cursor.fetchone():
+        return True
+
+    # Compatibilidad con datos antiguos que usaban tabla de asignaciones.
+    cursor.execute(
+        """SELECT 1 FROM course_professors
+           WHERE course_name = ? AND professor_username = ?""",
+        (course_name, professor_username)
+    )
+
+    return cursor.fetchone() is not None
 
 
 def _create_courses_table(cursor, table_name = 'courses'):
@@ -221,6 +251,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY,
                   username TEXT UNIQUE NOT NULL,
+                  email TEXT UNIQUE NOT NULL,
                   password TEXT NOT NULL,
                   role TEXT NOT NULL)''')
 
@@ -231,12 +262,12 @@ def init_db():
     if c.fetchone()[0] == 0:
 
         users = [
-            ('admin', hash_password('admin123'), 'admin'),
-            ('profesor', hash_password('prof123'), 'profesor'),
-            ('estudiante', hash_password('est123'), 'estudiante')
+            ('admin', 'admin@example.com', hash_password('admin123'), 'admin'),
+            ('profesor', 'profesor@example.com', hash_password('prof123'), 'profesor'),
+            ('estudiante', 'estudiante@example.com', hash_password('est123'), 'estudiante')
         ]
 
-        c.executemany('INSERT INTO users VALUES (NULL, ?, ?, ?)', users)
+        c.executemany('INSERT INTO users VALUES (NULL, ?, ?, ?, ?)', users)
 
     # Tabla de Cursos o Shelves + migracion de esquema
 
@@ -283,6 +314,42 @@ def init_db():
                   upload_date TEXT,
                   filepath TEXT,
                   FOREIGN KEY(upload_hash) REFERENCES uploads(upload_hash))''')
+
+    # Tabla de Profesores Asignados a Cursos (para ADMIN)
+
+    c.execute('''CREATE TABLE IF NOT EXISTS course_professors
+                 (id INTEGER PRIMARY KEY,
+                  course_name TEXT NOT NULL,
+                  professor_username TEXT NOT NULL,
+                  assigned_date TEXT NOT NULL,
+                  UNIQUE(course_name, professor_username),
+                  FOREIGN KEY(course_name) REFERENCES courses(name),
+                  FOREIGN KEY(professor_username) REFERENCES users(username))''')
+
+    # Tabla de Estudiantes Asignados a Cursos (para Profesores)
+
+    c.execute('''CREATE TABLE IF NOT EXISTS course_students
+                 (id INTEGER PRIMARY KEY,
+                  course_name TEXT NOT NULL,
+                  student_username TEXT NOT NULL,
+                  added_date TEXT NOT NULL,
+                  UNIQUE(course_name, student_username),
+                  FOREIGN KEY(course_name) REFERENCES courses(name),
+                  FOREIGN KEY(student_username) REFERENCES users(username))''')
+
+    # Tabla de Documentos Versionados
+
+    c.execute('''CREATE TABLE IF NOT EXISTS document_versions
+                 (id INTEGER PRIMARY KEY,
+                  document_id INTEGER NOT NULL,
+                  version_number INTEGER NOT NULL,
+                  filename TEXT NOT NULL,
+                  file_hash TEXT NOT NULL,
+                  upload_date TEXT NOT NULL,
+                  filepath TEXT NOT NULL,
+                  uploaded_by TEXT NOT NULL,
+                  UNIQUE(document_id, version_number),
+                  FOREIGN KEY(document_id) REFERENCES documents(id))''')
 
     # Crear cursos por defecto si no existen
 
@@ -408,9 +475,174 @@ def generate_file_hash(filepath):
     return hash_sha256.hexdigest()[:8]
 
 
+# -------------------------------------------------
+# Funciones Auxiliares para Diff y Versionado
+# -------------------------------------------------
+
+def extract_file_content(filepath):
+
+    """Extrae el contenido de un archivo (txt, md, docx en texto)"""
+
+    try:
+
+        ext = os.path.splitext(filepath)[1].lower()
+
+        if ext in ['.txt', '.md']:
+
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+
+                return f.read()
+
+        elif ext == '.docx':
+
+            # Para docx, extraer solo el texto básico
+            import subprocess
+            try:
+                result = subprocess.run(['powershell', '-Command', f'''
+                    Add-Type -AssemblyName DocumentFormat.OpenXml
+                    $doc = [DocumentFormat.OpenXml.Packaging.WordprocessingDocument]::Open('{filepath}', $false)
+                    $text = ""
+                    foreach ($p in $doc.MainDocumentPart.Document.Body.Descendants([DocumentFormat.OpenXml.Wordprocessing.Paragraph])) {{
+                        foreach ($r in $p.Descendants([DocumentFormat.OpenXml.Wordprocessing.Run])) {{
+                            foreach ($t in $r.Descendants([DocumentFormat.OpenXml.Wordprocessing.Text])) {{
+                                $text += $t.Text
+                            }}
+                        }}
+                        $text += "`n"
+                    }}
+                    $doc.Close()
+                    Write-Output $text
+                '''], capture_output=True, text=True, timeout=10)
+                return result.stdout if result.returncode == 0 else ""
+            except:
+                return ""
+
+        elif ext == '.pdf':
+
+            return "[Archivo PDF - no se puede mostrar diff visual]"
+
+        else:
+
+            return "[Formato no soportado para diff]"
+
+    except Exception as e:
+
+        return f"[Error al leer archivo: {str(e)}]"
+
+
+def compare_file_versions(filepath1, filepath2):
+
+    """Compara dos versiones de un archivo y retorna el resumen de cambios"""
+
+    content1 = extract_file_content(filepath1)
+    content2 = extract_file_content(filepath2)
+
+    lines1 = content1.split('\n') if content1 else []
+    lines2 = content2.split('\n') if content2 else []
+
+    # Contar líneas añadidas, eliminadas e igual
+    added = 0
+    removed = 0
+    same = 0
+
+    # Simplificar: contar líneas diferentes
+    max_lines = max(len(lines1), len(lines2))
+
+    for i in range(max_lines):
+
+        line1 = lines1[i] if i < len(lines1) else ""
+        line2 = lines2[i] if i < len(lines2) else ""
+
+        if line1 == line2 and line1.strip():
+
+            same += 1
+
+        elif line1 and not line2:
+
+            removed += 1
+
+        elif line2 and not line1:
+
+            added += 1
+
+        elif line1 != line2:
+
+            # Cambio: contar como eliminada y añadida
+            removed += 1
+            added += 1
+
+    return {
+        'added': added,
+        'removed': removed,
+        'same': same,
+        'total': max(len(lines1), len(lines2))
+    }
+
+
 # -----------------------
 # Rutas de AutenticaciÃ³n
 # -----------------------
+
+# Signup
+
+@app.route('/signup', methods = ['GET', 'POST'])
+
+def signup():
+
+    if request.method == 'POST':
+
+        role = request.form.get('role')
+        email = request.form.get('email')
+        username = request.form.get('username')
+        password = request.form.get('password')
+        password_confirm = request.form.get('password_confirm')
+
+        error = None
+
+        if not role or role not in ['admin', 'profesor', 'estudiante']:
+            error = 'Selecciona un rol válido'
+        elif not email or not validate_email(email):
+            error = 'El correo no es válido'
+        elif not username or len(username.strip()) == 0:
+            error = 'El nombre de usuario es requerido'
+        elif not password or not password_confirm:
+            error = 'La contraseña es requerida'
+        elif len(password) < 8 or len(password) > 20:
+            error = 'La contraseña debe tener entre 8 y 20 caracteres'
+        elif password != password_confirm:
+            error = 'Las contraseñas no coinciden'
+
+        if not error:
+            conn = sqlite3.connect(DATABASE)
+            c = conn.cursor()
+
+            c.execute("SELECT id FROM users WHERE email = ?", (email,))
+            if c.fetchone():
+                error = 'Este correo ya está registrado'
+            else:
+                c.execute("SELECT id FROM users WHERE username = ?", (username,))
+                if c.fetchone():
+                    error = 'Este nombre de usuario ya existe'
+
+            if error:
+                conn.close()
+                return render_template('signup.html', error = error)
+
+            try:
+                hashed_password = hash_password(password)
+                c.execute('INSERT INTO users VALUES (NULL, ?, ?, ?, ?)',
+                         (username, email, hashed_password, role))
+                conn.commit()
+                conn.close()
+                return redirect(url_for('login'))
+            except sqlite3.IntegrityError:
+                conn.close()
+                return render_template('signup.html', error = 'Error al crear la cuenta. Intenta de nuevo')
+
+        return render_template('signup.html', error = error)
+
+    return render_template('signup.html')
+
 
 # Login
 
@@ -420,18 +652,18 @@ def login():
 
     if request.method == 'POST':
 
-        username = request.form.get('username')
+        login_input = request.form.get('login')
         password = request.form.get('password')
         
         conn = sqlite3.connect(DATABASE)
         c = conn.cursor()
-        c.execute("SELECT password, role FROM users WHERE username = ?", (username,))
+        c.execute("SELECT password, role, username FROM users WHERE username = ? OR email = ?", (login_input, login_input))
         result = c.fetchone()
         conn.close()
         
         if result and verify_password(password, result[0]):
 
-            session['user'] = username
+            session['user'] = result[2]
             session['role'] = result[1]
             session['session_id'] = generate_hash(str(datetime.now()))
 
@@ -439,7 +671,7 @@ def login():
         
         else:
 
-            return render_template('login.html', error = 'Usuario o contraseÃ±a incorrectos')
+            return render_template('login.html', error = 'Usuario/correo o contraseña incorrectos')
     
     return render_template('login.html')
 
@@ -516,22 +748,53 @@ def upload_files():
         if file and allowed_file(file.filename):
 
             filename = secure_filename(file.filename)
-            filepath = os.path.join(DOWNLOAD_DIR, filename)
+            # Guardar con timestamp para evitar sobrescrituras
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
+            filepath = os.path.join(DOWNLOAD_DIR, timestamp + filename)
             file.save(filepath)
             
             file_hash = generate_file_hash(filepath)
-            doc_hash = generate_hash(str(datetime.now()) + filename)
+            doc_hash = generate_hash(str(datetime.now()) + filename + user)
             
-            # Guardar documento en la BD (global para el curso)
-
-            c.execute('INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
-                      (course, doc_hash, filename, file_hash, upload_date, filepath, user))
+            # Verificar si el documento ya existe (mismo nombre)
+            c.execute('SELECT id FROM documents WHERE course = ? AND filename = ?',
+                      (course, filename))
+            existing_doc = c.fetchone()
+            
+            if existing_doc:
+                # Es una versión nueva de un documento existente
+                document_id = existing_doc[0]
+                
+                # Obtener el próximo número de versión
+                c.execute('SELECT MAX(version_number) FROM document_versions WHERE document_id = ?',
+                          (document_id,))
+                max_version = c.fetchone()[0] or 0
+                next_version = max_version + 1
+                
+                # Guardar en document_versions
+                c.execute('INSERT INTO document_versions VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
+                          (document_id, next_version, filename, file_hash, upload_date, filepath, user))
+                
+                # Actualizar el documento principal con la versión más reciente
+                c.execute('UPDATE documents SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ? WHERE id = ?',
+                          (file_hash, upload_date, filepath, user, document_id))
+            
+            else:
+                # Documento nuevo
+                c.execute('INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
+                          (course, doc_hash, filename, file_hash, upload_date, filepath, user))
+                document_id = c.lastrowid
+                
+                # Insertar como versión 1
+                c.execute('INSERT INTO document_versions VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
+                          (document_id, 1, filename, file_hash, upload_date, filepath, user))
             
             uploaded_files.append({
                 'filename': filename,
                 'file_hash': file_hash,
                 'upload_date': upload_date,
-                'doc_hash': doc_hash
+                'doc_hash': doc_hash,
+                'document_id': document_id
             })
     
     if not uploaded_files:
@@ -928,12 +1191,21 @@ def create_course():
 
 @app.route('/api/delete-course/<course>', methods = ['DELETE'])
 
-@admin_required
+@login_required
 
 def delete_course(course):
 
+    user = session.get('user')
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
+    
+    # Verificar que solo ADMIN puede eliminar
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result or role_result[0] != 'admin':
+        conn.close()
+        return jsonify({'error': 'Solo administradores pueden eliminar cursos'}), 403
     
     # Verificar que existe el curso
 
@@ -983,6 +1255,17 @@ def delete_course(course):
 
         c.execute("DELETE FROM uploads WHERE course = ?", (course,))
         
+        # Eliminar asignaciones de profesores
+        c.execute("DELETE FROM course_professors WHERE course_name = ?", (course,))
+        
+        # Eliminar estudiantes del curso
+        c.execute("DELETE FROM course_students WHERE course_name = ?", (course,))
+        
+        # Eliminar documentos y versiones
+        c.execute("DELETE FROM document_versions WHERE document_id IN (SELECT id FROM documents WHERE course = ?)", (course,))
+        c.execute("DELETE FROM comments WHERE document_id IN (SELECT id FROM documents WHERE course = ?)", (course,))
+        c.execute("DELETE FROM documents WHERE course = ?", (course,))
+        
         # Eliminar curso
 
         c.execute("DELETE FROM courses WHERE name = ?", (course,))
@@ -997,6 +1280,561 @@ def delete_course(course):
         conn.close()
 
         return jsonify({'error': str(e)}), 500
+
+
+# ----- NUEVAS RUTAS PARA VERSIONADO Y GESTIÓN -----
+
+# Obtener historial de versiones de un documento
+
+@app.route('/api/document-history/<filename>')
+
+@login_required
+
+def get_document_history(filename):
+
+    """Obtiene el historial de versiones de un documento"""
+
+    course = session.get('selected_course', '')
+    
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Obtener el documento
+    c.execute('SELECT id FROM documents WHERE filename = ? AND course = ?',
+              (filename, course))
+    doc_result = c.fetchone()
+    
+    if not doc_result:
+        conn.close()
+        return jsonify({'error': 'Documento no encontrado'}), 404
+    
+    document_id = doc_result[0]
+    
+    # Obtener todas las versiones
+    c.execute('''SELECT id, version_number, filename, file_hash, upload_date, uploaded_by 
+                 FROM document_versions 
+                 WHERE document_id = ? 
+                 ORDER BY version_number DESC''',
+              (document_id,))
+    
+    versions = []
+    for version_id, version_num, fname, fhash, upload_date, uploaded_by in c.fetchall():
+        versions.append({
+            'version_id': version_id,
+            'version_number': version_num,
+            'filename': fname,
+            'file_hash': fhash,
+            'upload_date': upload_date,
+            'uploaded_by': uploaded_by
+        })
+    
+    conn.close()
+    
+    return jsonify({
+        'document_id': document_id,
+        'filename': filename,
+        'versions': versions
+    })
+
+
+# Obtener diff entre dos versiones
+
+@app.route('/api/document-diff/<int:document_id>/<int:version1>/<int:version2>')
+
+@login_required
+
+def get_document_diff(document_id, version1, version2):
+
+    """Compara dos versiones de un documento"""
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Obtener filepaths de ambas versiones
+    c.execute('SELECT filepath FROM document_versions WHERE document_id = ? AND version_number = ?',
+              (document_id, version1))
+    file1_result = c.fetchone()
+    
+    c.execute('SELECT filepath FROM document_versions WHERE document_id = ? AND version_number = ?',
+              (document_id, version2))
+    file2_result = c.fetchone()
+    
+    conn.close()
+    
+    if not file1_result or not file2_result:
+        return jsonify({'error': 'Una o ambas versiones no existen'}), 404
+    
+    filepath1 = file1_result[0]
+    filepath2 = file2_result[0]
+    
+    # Comparar archivos
+    diff = compare_file_versions(filepath1, filepath2)
+    
+    return jsonify({
+        'version1': version1,
+        'version2': version2,
+        'diff': diff
+    })
+
+
+# Descargar un archivo específico
+
+@app.route('/api/download/<int:document_id>')
+
+@login_required
+
+def download_document(document_id):
+
+    """Descarga la versión más reciente de un documento"""
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Obtener documento y verificar acceso
+    c.execute('SELECT course, filename FROM documents WHERE id = ?',
+              (document_id,))
+    doc_result = c.fetchone()
+    
+    if not doc_result:
+        conn.close()
+        return jsonify({'error': 'Documento no encontrado'}), 404
+    
+    course_name = doc_result[0]
+    
+    # Verificar que el usuario tenga acceso al curso
+    user = session.get('user')
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    conn.close()
+    
+    if not role_result:
+        return jsonify({'error': 'Usuario no autorizado'}), 403
+    
+    # Obtener versión más reciente
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''SELECT filepath, filename FROM document_versions 
+                 WHERE document_id = ? 
+                 ORDER BY version_number DESC LIMIT 1''',
+              (document_id,))
+    version_result = c.fetchone()
+    conn.close()
+    
+    if not version_result:
+        return jsonify({'error': 'Archivo no disponible'}), 404
+    
+    filepath = version_result[0]
+    filename = version_result[1]
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Archivo no encontrado en servidor'}), 404
+    
+    return send_file(filepath, as_attachment=True, download_name=filename)
+
+
+# Descargar una versión específica
+
+@app.route('/api/download-version/<int:version_id>')
+
+@login_required
+
+def download_version(version_id):
+
+    """Descarga una versión específica de un documento"""
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    c.execute('SELECT filepath, filename FROM document_versions WHERE id = ?',
+              (version_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    if not result:
+        return jsonify({'error': 'Versión no encontrada'}), 404
+    
+    filepath = result[0]
+    filename = result[1]
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Archivo no encontrado'}), 404
+    
+    return send_file(filepath, as_attachment=True, download_name=f"v{version_id}_{filename}")
+
+
+# ----- RUTAS PARA GESTIÓN DE PROFESORES (ADMIN) -----
+
+# Obtener profesores asignados a un curso
+
+@app.route('/api/course-professors/<course>')
+
+@login_required
+
+def get_course_professors(course):
+
+    """Obtiene los profesores asignados a un curso (solo admin)"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar que es admin
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result or role_result[0] != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    # Obtener profesores
+    c.execute('''SELECT professor_username, assigned_date 
+                 FROM course_professors 
+                 WHERE course_name = ? 
+                 ORDER BY assigned_date ASC''',
+              (course,))
+    
+    professors = []
+    for prof_username, assigned_date in c.fetchall():
+        professors.append({
+            'username': prof_username,
+            'assigned_date': assigned_date
+        })
+    
+    conn.close()
+    
+    return jsonify(professors)
+
+
+# Asignar profesor a un curso
+
+@app.route('/api/assign-professor', methods=['POST'])
+
+@login_required
+
+def assign_professor():
+
+    """Asigna un profesor a un curso (solo admin)"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar que es admin
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result or role_result[0] != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    data = request.json or {}
+    course_name = data.get('course_name', '').strip()
+    professor_username = data.get('professor_username', '').strip()
+    
+    if not course_name or not professor_username:
+        conn.close()
+        return jsonify({'error': 'Datos incompletos'}), 400
+    
+    # Verificar que el curso existe
+    c.execute("SELECT id FROM courses WHERE name = ?", (course_name,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Curso no existe'}), 404
+    
+    # Verificar que el profesor existe y es profesor
+    c.execute("SELECT role FROM users WHERE username = ?", (professor_username,))
+    prof_role = c.fetchone()
+    
+    if not prof_role or prof_role[0] != 'profesor':
+        conn.close()
+        return jsonify({'error': 'Usuario no es profesor'}), 400
+    
+    # Verificar que no esté ya asignado
+    c.execute("SELECT id FROM course_professors WHERE course_name = ? AND professor_username = ?",
+              (course_name, professor_username))
+    if c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Profesor ya asignado a este curso'}), 400
+    
+    try:
+        assigned_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute('INSERT INTO course_professors VALUES (NULL, ?, ?, ?)',
+                  (course_name, professor_username, assigned_date))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Profesor asignado correctamente'}), 201
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+# Desasignar profesor de un curso
+
+@app.route('/api/unassign-professor', methods=['POST'])
+
+@login_required
+
+def unassign_professor():
+
+    """Desasigna un profesor de un curso (solo admin)"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar que es admin
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result or role_result[0] != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    data = request.json or {}
+    course_name = data.get('course_name', '').strip()
+    professor_username = data.get('professor_username', '').strip()
+    
+    if not course_name or not professor_username:
+        conn.close()
+        return jsonify({'error': 'Datos incompletos'}), 400
+    
+    try:
+        c.execute('DELETE FROM course_professors WHERE course_name = ? AND professor_username = ?',
+                  (course_name, professor_username))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Profesor desasignado correctamente'}), 200
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+# ----- RUTAS PARA GESTIÓN DE ESTUDIANTES (PROFESOR) -----
+
+# Obtener estudiantes en un curso
+
+@app.route('/api/course-students/<course>')
+
+@login_required
+
+def get_course_students(course):
+
+    """Obtiene los estudiantes inscritos en un curso"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar permisos (profesor del curso o admin)
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result:
+        conn.close()
+        return jsonify({'error': 'Usuario no válido'}), 403
+    
+    role = role_result[0]
+    
+    if role == 'profesor':
+        if not professor_can_manage_course(c, course, user):
+            conn.close()
+            return jsonify({'error': 'No es profesor de este curso'}), 403
+    
+    elif role != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    # Obtener estudiantes
+    c.execute('''SELECT student_username, added_date 
+                 FROM course_students 
+                 WHERE course_name = ? 
+                 ORDER BY added_date ASC''',
+              (course,))
+    
+    students = []
+    for student_username, added_date in c.fetchall():
+        students.append({
+            'username': student_username,
+            'added_date': added_date
+        })
+    
+    conn.close()
+    
+    return jsonify(students)
+
+
+# Obtener estudiantes disponibles (no inscritos)
+
+@app.route('/api/available-students/<course>')
+
+@login_required
+
+def get_available_students(course):
+
+    """Obtiene los estudiantes que puede agregar un profesor"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar que es profesor del curso
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result:
+        conn.close()
+        return jsonify({'error': 'Usuario no válido'}), 403
+    
+    role = role_result[0]
+    
+    if role == 'profesor':
+        if not professor_can_manage_course(c, course, user):
+            conn.close()
+            return jsonify({'error': 'No es profesor de este curso'}), 403
+    
+    elif role != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    # Obtener estudiantes registrados pero no en este curso
+    c.execute('''SELECT username FROM users 
+                 WHERE role = 'estudiante' 
+                 AND username NOT IN (
+                     SELECT student_username FROM course_students WHERE course_name = ?
+                 )
+                 ORDER BY username ASC''',
+              (course,))
+    
+    students = [row[0] for row in c.fetchall()]
+    conn.close()
+    
+    return jsonify(students)
+
+
+# Agregar estudiante a un curso
+
+@app.route('/api/add-student', methods=['POST'])
+
+@login_required
+
+def add_student():
+
+    """Agrega un estudiante a un curso"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar permisos
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result:
+        conn.close()
+        return jsonify({'error': 'Usuario no válido'}), 403
+    
+    role = role_result[0]
+    
+    data = request.json or {}
+    course_name = data.get('course_name', '').strip()
+    student_username = data.get('student_username', '').strip()
+    
+    if not course_name or not student_username:
+        conn.close()
+        return jsonify({'error': 'Datos incompletos'}), 400
+    
+    if role == 'profesor':
+        if not professor_can_manage_course(c, course_name, user):
+            conn.close()
+            return jsonify({'error': 'No es profesor de este curso'}), 403
+    
+    elif role != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    # Verificar que el estudiante existe
+    c.execute("SELECT role FROM users WHERE username = ?", (student_username,))
+    student_role = c.fetchone()
+    
+    if not student_role or student_role[0] != 'estudiante':
+        conn.close()
+        return jsonify({'error': 'Usuario no es estudiante'}), 400
+    
+    # Verificar que no esté ya inscrito
+    c.execute("SELECT id FROM course_students WHERE course_name = ? AND student_username = ?",
+              (course_name, student_username))
+    if c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Estudiante ya inscrito en este curso'}), 400
+    
+    try:
+        added_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute('INSERT INTO course_students VALUES (NULL, ?, ?, ?)',
+                  (course_name, student_username, added_date))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Estudiante agregado correctamente'}), 201
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+# Eliminar estudiante de un curso
+
+@app.route('/api/remove-student', methods=['POST'])
+
+@login_required
+
+def remove_student():
+
+    """Elimina un estudiante de un curso"""
+
+    user = session.get('user')
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Verificar permisos
+    c.execute("SELECT role FROM users WHERE username = ?", (user,))
+    role_result = c.fetchone()
+    
+    if not role_result:
+        conn.close()
+        return jsonify({'error': 'Usuario no válido'}), 403
+    
+    role = role_result[0]
+    
+    data = request.json or {}
+    course_name = data.get('course_name', '').strip()
+    student_username = data.get('student_username', '').strip()
+    
+    if not course_name or not student_username:
+        conn.close()
+        return jsonify({'error': 'Datos incompletos'}), 400
+    
+    if role == 'profesor':
+        if not professor_can_manage_course(c, course_name, user):
+            conn.close()
+            return jsonify({'error': 'No es profesor de este curso'}), 403
+    
+    elif role != 'admin':
+        conn.close()
+        return jsonify({'error': 'Acceso denegado'}), 403
+    
+    try:
+        c.execute('DELETE FROM course_students WHERE course_name = ? AND student_username = ?',
+                  (course_name, student_username))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Estudiante removido correctamente'}), 200
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
 
