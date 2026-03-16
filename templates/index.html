@@ -1,0 +1,417 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Curador de Conocimiento Asistido - Seleccionar Shelf</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header-top">
+            <h1>Curador de Conocimiento Asistido</h1>
+            <div class="user-info">
+                <span>Usuario: {{ session.user }} ({{ session.role }})</span>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesion</a>
+            </div>
+        </div>
+
+        <div class="card selection-card">
+            <h2>Seleccionar Curso</h2>
+            <p class="subtitle">Por favor, selecciona un shelf para continuar</p>
+
+            <div class="courses-container" id="coursesContainer">
+                <p class="loading">Cargando shelves...</p>
+            </div>
+
+            <button id="acceptBtn" class="btn btn-primary" disabled>
+                Aceptar
+            </button>
+
+            {% if session.role in ['admin', 'profesor'] %}
+            <div class="admin-section">
+                {% if session.role == 'admin' %}
+                <h3>Administración de Shelves</h3>
+
+                <div class="create-course-form">
+                    <input type="text" id="courseName" placeholder="Nombre del curso (max 100 caracteres)" maxlength="100">
+                    <input type="text" id="courseCode" placeholder="Codigo del curso (max 30 caracteres)" maxlength="30">
+                    <select id="responsibleTeacher" class="form-select">
+                        <option value="">Cargando docentes...</option>
+                    </select>
+                    <select id="courseStatus" class="form-select">
+                        <option value="borrador">Borrador</option>
+                        <option value="publicado">Publicado</option>
+                    </select>
+                    <button id="createBtn" class="btn btn-success" type="button">Crear Shelf</button>
+                </div>
+                {% else %}
+                <h3>Administración de Estudiantes</h3>
+                <p class="subtitle-sm">Selecciona un curso arriba para gestionar sus estudiantes</p>
+
+                <div class="students-management" id="studentsManagement" style="display: none;">
+                    <input type="hidden" id="courseForStudent">
+                    <select id="studentSelect" class="form-select">
+                        <option value="">Selecciona un estudiante...</option>
+                    </select>
+                    <button id="addStudentBtn" class="btn btn-success" type="button">Agregar Estudiante</button>
+                    <div id="studentsList" class="students-list" style="margin-top: 15px;"></div>
+                </div>
+                {% endif %}
+                
+                <div id="message" class="message"></div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        let selectedCourse = null;
+        const role = '{{ session.role }}';
+        const isAdmin = {{ 'true' if session.role == 'admin' else 'false' }};
+
+        function escapeHtml(value) {
+            const temp = document.createElement('div');
+            temp.textContent = value;
+            return temp.innerHTML;
+        }
+
+        function formatStatus(status) {
+            return status === 'publicado' ? 'Publicado' : 'Borrador';
+        }
+
+        async function loadCourses() {
+            try {
+                const response = await fetch('/api/courses');
+                if (!response.ok) {
+                    throw new Error('No fue posible cargar los shelves');
+                }
+
+                const courses = await response.json();
+                const container = document.getElementById('coursesContainer');
+
+                if (courses.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay shelves disponibles</p>';
+                    return;
+                }
+
+                container.innerHTML = courses.map(course => `
+                    <div class="course-option" data-course="${encodeURIComponent(course.name)}">
+                        <div class="course-header">
+                            <div class="course-content">
+                                <div class="course-icon">[C]</div>
+                                <div class="course-text">
+                                    <h3>${escapeHtml(course.name)}</h3>
+                                    <p class="course-meta">ID: ${course.id} | Codigo: ${escapeHtml(course.course_code)}</p>
+                                    <p class="course-meta">Docente: ${escapeHtml(course.responsible_teacher)} | Estado: ${escapeHtml(formatStatus(course.status))}</p>
+                                </div>
+                            </div>
+                            ${isAdmin === 'true' ? `<button class="btn-delete-course" type="button" data-course="${encodeURIComponent(course.name)}">X</button>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+
+                document.querySelectorAll('.course-option').forEach(option => {
+                    option.addEventListener('click', selectCourse);
+                });
+
+                document.querySelectorAll('.btn-delete-course').forEach(button => {
+                    button.addEventListener('click', function(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const courseName = decodeURIComponent(this.dataset.course);
+                        deleteCourse(courseName);
+                    });
+                });
+            } catch (error) {
+                document.getElementById('coursesContainer').innerHTML =
+                    `<p class="error-message">Error al cargar cursos: ${error.message}</p>`;
+            }
+        }
+
+        async function loadTeachers() {
+            const teacherSelect = document.getElementById('responsibleTeacher');
+            if (!teacherSelect) return;
+
+            teacherSelect.innerHTML = '<option value="">Cargando docentes...</option>';
+            teacherSelect.disabled = true;
+
+            try {
+                const response = await fetch('/api/teachers');
+                if (!response.ok) {
+                    throw new Error('No fue posible cargar docentes');
+                }
+
+                const teachers = await response.json();
+                if (teachers.length === 0) {
+                    teacherSelect.innerHTML = '<option value="">No hay docentes disponibles</option>';
+                    return;
+                }
+
+                teacherSelect.innerHTML = '<option value="">Selecciona un docente responsable...</option>' +
+                    teachers.map(teacher => `<option value="${escapeHtml(teacher)}">${escapeHtml(teacher)}</option>`).join('');
+                teacherSelect.disabled = false;
+            } catch (error) {
+                teacherSelect.innerHTML = '<option value="">Error al cargar docentes</option>';
+                const messageDiv = document.getElementById('message');
+                if (messageDiv) {
+                    messageDiv.innerHTML = `<div class="error-message">Error al cargar docentes: ${error.message}</div>`;
+                }
+            }
+        }
+
+        function selectCourse(e) {
+            if (e.target.closest('.btn-delete-course')) return;
+
+            document.querySelectorAll('.course-option').forEach(option => option.classList.remove('selected'));
+            this.classList.add('selected');
+            selectedCourse = decodeURIComponent(this.dataset.course);
+            document.getElementById('acceptBtn').disabled = false;
+
+            if (role === 'profesor') {
+                loadStudentsForCourse(selectedCourse);
+            }
+        }
+
+        async function createCourse() {
+            const name = document.getElementById('courseName').value.trim();
+            const courseCode = document.getElementById('courseCode').value.trim();
+            const responsibleTeacher = document.getElementById('responsibleTeacher').value;
+            const status = document.getElementById('courseStatus').value;
+            const messageDiv = document.getElementById('message');
+
+            if (!name) {
+                messageDiv.innerHTML = '<div class="error-message">Por favor ingresa el nombre del curso</div>';
+                return;
+            }
+
+            if (!courseCode) {
+                messageDiv.innerHTML = '<div class="error-message">Por favor ingresa el codigo del curso</div>';
+                return;
+            }
+
+            if (!responsibleTeacher) {
+                messageDiv.innerHTML = '<div class="error-message">Selecciona un docente responsable</div>';
+                return;
+            }
+
+            if (!status) {
+                messageDiv.innerHTML = '<div class="error-message">Selecciona un estado</div>';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/create-course', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name,
+                        course_code: courseCode,
+                        responsible_teacher: responsibleTeacher,
+                        status
+                    })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    messageDiv.innerHTML = `
+                        <div class="success-message">
+                            <p>${data.message}</p>
+                            <p><strong>ID:</strong> ${data.course.id}</p>
+                        </div>
+                    `;
+                    document.getElementById('courseName').value = '';
+                    document.getElementById('courseCode').value = '';
+                    document.getElementById('courseStatus').value = 'borrador';
+                    setTimeout(() => {
+                        messageDiv.innerHTML = '';
+                        loadCourses();
+                    }, 2000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error-message">${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error-message">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function deleteCourse(course) {
+            if (!confirm(`Estas seguro de que deseas eliminar el curso "${course}"?\n\nEsto eliminara TODOS los archivos e historico asociados.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/delete-course/${encodeURIComponent(course)}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+                const messageDiv = document.getElementById('message');
+
+                if (response.ok) {
+                    if (messageDiv) {
+                        messageDiv.innerHTML = `<div class="success-message">${data.message}</div>`;
+                        setTimeout(() => {
+                            messageDiv.innerHTML = '';
+                        }, 2000);
+                    }
+                    await loadCourses();
+                } else if (messageDiv) {
+                    messageDiv.innerHTML = `<div class="error-message">${data.error}</div>`;
+                }
+            } catch (error) {
+                const messageDiv = document.getElementById('message');
+                if (messageDiv) {
+                    messageDiv.innerHTML = `<div class="error-message">Error: ${error.message}</div>`;
+                }
+            }
+        }
+
+        async function initPage() {
+            const acceptBtn = document.getElementById('acceptBtn');
+
+            if (acceptBtn) {
+                acceptBtn.addEventListener('click', function() {
+                    if (!selectedCourse) {
+                        return;
+                    }
+
+                    window.location.href = `/upload/${encodeURIComponent(selectedCourse)}`;
+                });
+            }
+            
+            if (role === 'admin') {
+                await loadTeachers();
+                document.getElementById('createBtn').addEventListener('click', createCourse);
+                document.getElementById('courseCode').addEventListener('input', function() {
+                    this.value = this.value.toUpperCase();
+                });
+
+                ['courseName', 'courseCode'].forEach(fieldId => {
+                    document.getElementById(fieldId).addEventListener('keypress', function(e) {
+                        if (e.key === 'Enter') {
+                            createCourse();
+                        }
+                    });
+                });
+                
+            } else if (role === 'profesor') {
+                document.getElementById('addStudentBtn').addEventListener('click', addStudent);
+            }
+
+            await loadCourses();
+        }
+
+        async function loadStudentsForCourse(courseName) {
+            try {
+                const response = await fetch(`/api/available-students/${encodeURIComponent(courseName)}`);
+                if (!response.ok) {
+                    throw new Error('No fue posible cargar estudiantes disponibles');
+                }
+
+                const availableStudents = await response.json();
+                const select = document.getElementById('studentSelect');
+
+                if (select) {
+                    if (!Array.isArray(availableStudents) || availableStudents.length === 0) {
+                        select.innerHTML = '<option value="">No hay estudiantes disponibles</option>';
+                    } else {
+                        select.innerHTML = '<option value="">Selecciona un estudiante...</option>' +
+                            availableStudents.map(student =>
+                                `<option value="${escapeHtml(student)}">${escapeHtml(student)}</option>`
+                            ).join('');
+                    }
+                }
+
+                const mgmtDiv = document.getElementById('studentsManagement');
+                if (mgmtDiv) {
+                    mgmtDiv.style.display = 'block';
+                    document.getElementById('courseForStudent').value = courseName;
+                    await loadStudentsInCourse(courseName);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        async function loadStudentsInCourse(courseName) {
+            try {
+                const response = await fetch(`/api/course-students/${encodeURIComponent(courseName)}`);
+                const students = await response.json();
+                const container = document.getElementById('studentsList');
+
+                if (students.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay estudiantes en este curso</p>';
+                    return;
+                }
+
+                container.innerHTML = '<h4 style="color: #333; margin-bottom: 10px;">Estudiantes inscritos:</h4>' +
+                    students.map(student => `
+                        <div class="assigned-item">
+                            <span>${escapeHtml(student.username)}</span>
+                            <button class="btn-remove" onclick="removeStudent('${escapeHtml(courseName)}', '${escapeHtml(student.username)}')">Remover</button>
+                        </div>
+                    `).join('');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        async function addStudent() {
+            const studentSelect = document.getElementById('studentSelect');
+            const selectedStudent = studentSelect ? studentSelect.value.trim() : '';
+            const courseName = selectedCourse;
+
+            if (!selectedStudent) {
+                document.getElementById('message').innerHTML = '<div class="error-message">Selecciona un estudiante</div>';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/add-student', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ course_name: courseName, student_username: selectedStudent })
+                });
+
+                const data = await response.json();
+                const messageDiv = document.getElementById('message');
+
+                if (response.ok) {
+                    messageDiv.innerHTML = '<div class="success-message">Estudiante agregado correctamente</div>';
+                    await loadStudentsForCourse(courseName);
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 2000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error-message">${data.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = `<div class="error-message">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function removeStudent(courseName, student) {
+            if (!confirm(`¿Remover estudiante ${student} del curso?`)) return;
+
+            try {
+                const response = await fetch('/api/remove-student', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ course_name: courseName, student_username: student })
+                });
+
+                if (response.ok) {
+                    await loadStudentsForCourse(courseName);
+                } else {
+                    alert('Error al remover estudiante');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        initPage();
+    </script>
+</body>
+</html>
