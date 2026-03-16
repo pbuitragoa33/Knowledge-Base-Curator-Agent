@@ -51,7 +51,9 @@
 
                 <div class="students-management" id="studentsManagement" style="display: none;">
                     <input type="hidden" id="courseForStudent">
-                    <input type="text" id="studentSearch" placeholder="Buscar estudiante (nombre de usuario)...">
+                    <select id="studentSelect" class="form-select">
+                        <option value="">Selecciona un estudiante...</option>
+                    </select>
                     <button id="addStudentBtn" class="btn btn-success" type="button">Agregar Estudiante</button>
                     <div id="studentsList" class="students-list" style="margin-top: 15px;"></div>
                 </div>
@@ -305,7 +307,23 @@
         async function loadStudentsForCourse(courseName) {
             try {
                 const response = await fetch(`/api/available-students/${encodeURIComponent(courseName)}`);
+                if (!response.ok) {
+                    throw new Error('No fue posible cargar estudiantes disponibles');
+                }
+
                 const availableStudents = await response.json();
+                const select = document.getElementById('studentSelect');
+
+                if (select) {
+                    if (!Array.isArray(availableStudents) || availableStudents.length === 0) {
+                        select.innerHTML = '<option value="">No hay estudiantes disponibles</option>';
+                    } else {
+                        select.innerHTML = '<option value="">Selecciona un estudiante...</option>' +
+                            availableStudents.map(student =>
+                                `<option value="${escapeHtml(student)}">${escapeHtml(student)}</option>`
+                            ).join('');
+                    }
+                }
 
                 const mgmtDiv = document.getElementById('studentsManagement');
                 if (mgmtDiv) {
@@ -342,11 +360,12 @@
         }
 
         async function addStudent() {
-            const studentSearch = document.getElementById('studentSearch').value.trim();
+            const studentSelect = document.getElementById('studentSelect');
+            const selectedStudent = studentSelect ? studentSelect.value.trim() : '';
             const courseName = selectedCourse;
 
-            if (!studentSearch) {
-                document.getElementById('message').innerHTML = '<div class="error-message">Ingresa el nombre del estudiante</div>';
+            if (!selectedStudent) {
+                document.getElementById('message').innerHTML = '<div class="error-message">Selecciona un estudiante</div>';
                 return;
             }
 
@@ -354,7 +373,7 @@
                 const response = await fetch('/api/add-student', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ course_name: courseName, student_username: studentSearch })
+                    body: JSON.stringify({ course_name: courseName, student_username: selectedStudent })
                 });
 
                 const data = await response.json();
@@ -362,8 +381,7 @@
 
                 if (response.ok) {
                     messageDiv.innerHTML = '<div class="success-message">Estudiante agregado correctamente</div>';
-                    document.getElementById('studentSearch').value = '';
-                    await loadStudentsInCourse(courseName);
+                    await loadStudentsForCourse(courseName);
                     setTimeout(() => { messageDiv.innerHTML = ''; }, 2000);
                 } else {
                     messageDiv.innerHTML = `<div class="error-message">${data.error}</div>`;
@@ -384,7 +402,7 @@
                 });
 
                 if (response.ok) {
-                    await loadStudentsInCourse(courseName);
+                    await loadStudentsForCourse(courseName);
                 } else {
                     alert('Error al remover estudiante');
                 }
