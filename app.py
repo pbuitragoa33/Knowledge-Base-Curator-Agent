@@ -16,6 +16,8 @@ from functools import wraps
 import shutil
 import re
 
+from document_processing import process_uploaded_file
+
 
 # ----------
 # En Flask
@@ -29,10 +31,12 @@ app.secret_key = 'tu_clave_secreta_segura_cambiar'
 # ConfiguraciÃ³n --> extensiones, directorios y rutas
 # ----------------------------------------------------
 
-DOWNLOAD_DIR = os.path.expanduser('~/Downloads/UploadedFiles')
+DOWNLOAD_DIR = os.environ.get('DOWNLOAD_DIR', os.path.expanduser('~/Downloads/UploadedFiles'))
 ALLOWED_EXTENSIONS = {'pdf', 'md', 'docx', 'txt'}
-DATABASE = 'database.db'
+DATABASE = os.environ.get('DATABASE_PATH', 'database.db')
 VALID_SHELF_STATUS = {'borrador', 'publicado'}
+CHUNK_REGISTRY = {}
+UPLOAD_CHUNK_INDEX = {}
 
 
 # -----------------------------------------
@@ -439,6 +443,21 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def register_chunk_records(upload_hash, chunk_records):
+
+    """Mantiene el registro temporal chunk -> snapshot de subida."""
+
+    upload_chunk_ids = UPLOAD_CHUNK_INDEX.setdefault(upload_hash, [])
+
+    for record in chunk_records:
+
+        chunk_id = record['chunk_id']
+        CHUNK_REGISTRY[chunk_id] = record
+        upload_chunk_ids.append(chunk_id)
+
+    return upload_chunk_ids
+
+
 # -------------------------------------------------
 # Generar Hash de 8 caracteres
 # -------------------------------------------------
@@ -737,85 +756,118 @@ def upload_files():
     user = session.get('user', 'Unknown')
     files = request.files.getlist('files[]')
     upload_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    upload_hash = generate_hash(str(datetime.now()) + user)
     
     uploaded_files = []
+    registered_chunk_ids = []
     
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    
-    for file in files:
 
-        if file and allowed_file(file.filename):
+    try:
+        UPLOAD_CHUNK_INDEX[upload_hash] = []
 
-            filename = secure_filename(file.filename)
-            # Guardar con timestamp para evitar sobrescrituras
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
-            filepath = os.path.join(DOWNLOAD_DIR, timestamp + filename)
-            file.save(filepath)
-            
-            file_hash = generate_file_hash(filepath)
-            doc_hash = generate_hash(str(datetime.now()) + filename + user)
-            
-            # Verificar si el documento ya existe (mismo nombre)
-            c.execute('SELECT id FROM documents WHERE course = ? AND filename = ?',
-                      (course, filename))
-            existing_doc = c.fetchone()
-            
-            if existing_doc:
-                # Es una versión nueva de un documento existente
-                document_id = existing_doc[0]
+        for file in files:
+
+            if file and allowed_file(file.filename):
+
+                filename = secure_filename(file.filename)
+                # Guardar con timestamp para evitar sobrescrituras
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
+                filepath = os.path.join(DOWNLOAD_DIR, timestamp + filename)
+                file.save(filepath)
                 
-                # Obtener el próximo número de versión
-                c.execute('SELECT MAX(version_number) FROM document_versions WHERE document_id = ?',
-                          (document_id,))
-                max_version = c.fetchone()[0] or 0
-                next_version = max_version + 1
+                file_hash = generate_file_hash(filepath)
                 
-                # Guardar en document_versions
-                c.execute('INSERT INTO document_versions VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
-                          (document_id, next_version, filename, file_hash, upload_date, filepath, user))
+                # Verificar si el documento ya existe (mismo nombre)
+                c.execute('SELECT id, doc_hash FROM documents WHERE course = ? AND filename = ?',
+                          (course, filename))
+                existing_doc = c.fetchone()
                 
-                # Actualizar el documento principal con la versión más reciente
-                c.execute('UPDATE documents SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ? WHERE id = ?',
-                          (file_hash, upload_date, filepath, user, document_id))
-            
-            else:
-                # Documento nuevo
-                c.execute('INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
-                          (course, doc_hash, filename, file_hash, upload_date, filepath, user))
-                document_id = c.lastrowid
+                if existing_doc:
+                    # Es una versión nueva de un documento existente
+                    document_id = existing_doc[0]
+                    doc_hash = existing_doc[1]
+                    
+                    # Obtener el próximo número de versión
+                    c.execute('SELECT MAX(version_number) FROM document_versions WHERE document_id = ?',
+                              (document_id,))
+                    max_version = c.fetchone()[0] or 0
+                    next_version = max_version + 1
+                    
+                    # Guardar en document_versions
+                    c.execute('INSERT INTO document_versions VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
+                              (document_id, next_version, filename, file_hash, upload_date, filepath, user))
+                    
+                    # Actualizar el documento principal con la versión más reciente
+                    c.execute('UPDATE documents SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ? WHERE id = ?',
+                              (file_hash, upload_date, filepath, user, document_id))
                 
-                # Insertar como versión 1
-                c.execute('INSERT INTO document_versions VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
-                          (document_id, 1, filename, file_hash, upload_date, filepath, user))
-            
-            uploaded_files.append({
-                'filename': filename,
-                'file_hash': file_hash,
-                'upload_date': upload_date,
-                'doc_hash': doc_hash,
-                'document_id': document_id
-            })
-    
-    if not uploaded_files:
+                else:
+                    # Documento nuevo
+                    doc_hash = generate_hash(str(datetime.now()) + filename + user)
+                    c.execute('INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
+                              (course, doc_hash, filename, file_hash, upload_date, filepath, user))
+                    document_id = c.lastrowid
+                    
+                    # Insertar como versión 1
+                    c.execute('INSERT INTO document_versions VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
+                              (document_id, 1, filename, file_hash, upload_date, filepath, user))
+
+                chunk_records = process_uploaded_file(
+                    filepath,
+                    document_id=document_id,
+                    doc_hash=doc_hash,
+                    upload_hash=upload_hash,
+                    course=course,
+                    upload_date=upload_date,
+                    filename=filename,
+                    file_hash=file_hash,
+                )
+
+                registered_ids = register_chunk_records(upload_hash, chunk_records)
+                registered_chunk_ids = list(registered_ids)
+
+                if not chunk_records:
+                    app.logger.warning('No chunks generated for uploaded file: %s', filename)
+                
+                uploaded_files.append({
+                    'filename': filename,
+                    'file_hash': file_hash,
+                    'upload_date': upload_date,
+                    'doc_hash': doc_hash,
+                    'document_id': document_id
+                })
+        
+        if not uploaded_files:
+
+            UPLOAD_CHUNK_INDEX.pop(upload_hash, None)
+            conn.close()
+
+            return jsonify({'error': 'No valid files provided'}), 400
+        
+        conn.commit()
+
+        return jsonify({
+            'success': True,
+            'upload_hash': upload_hash,
+            'files': uploaded_files,
+            'upload_date': upload_date
+        })
+
+    except Exception as e:
+
+        conn.rollback()
+
+        for chunk_id in registered_chunk_ids:
+            CHUNK_REGISTRY.pop(chunk_id, None)
+
+        UPLOAD_CHUNK_INDEX.pop(upload_hash, None)
+        return jsonify({'error': str(e)}), 500
+
+    finally:
 
         conn.close()
-
-        return jsonify({'error': 'No valid files provided'}), 400
-    
-    conn.commit()
-    conn.close()
-    
-    # Generar hash global para esta carga
-
-    upload_hash = generate_hash(str(datetime.now()) + user)
-    
-    return jsonify({
-        'success': True,
-        'upload_hash': upload_hash,
-        'files': uploaded_files,
-        'upload_date': upload_date
-    })
 
 
 # ObtenciÃ³n de los ODucmentos Globales de un Curso
