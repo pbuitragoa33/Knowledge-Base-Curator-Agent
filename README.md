@@ -19,6 +19,7 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Documentos globales y persistentes en la base de datos local SQLite.
 * Subir documentos (PDF, MD, DOCX, TXT) mediante drag & drop.
 * Sistema de versionado de documentos y visualización de diferencias (Diff) para documentos de texto/markdown.
+* Generación local de embeddings por chunk con metadatos asociados, lista para integrarse con una vector store en el siguiente sprint.
 * Descarga directa de archivos de las distintas versiones subidas.
 * Comentarios de Estudiantes que son visibles solo para profesor/admin.
 * Hash SHA256 para cada documento y cada subida.
@@ -66,6 +67,8 @@ El script automáticamente va a instalr las dependencias, iniciar el servidor y 
 ```bash
 pip install -r requirements.txt
 ```
+
+   La primera ejecución que genere embeddings puede descargar el modelo local `sentence-transformers/all-MiniLM-L6-v2`.
 
 3. **Ejecutar la aplicación**
 ```bash
@@ -248,6 +251,7 @@ Cada comentario incluye:
 
 - **Base de datos**: SQLite3 (local, no requiere servidor externo)
 - **Backend**: Flask 
+- **Embeddings**: sentence-transformers (modelo local `all-MiniLM-L6-v2`)
 - **Frontend**: HTML5, CSS3, JavaScript 
 - **Hashing**: SHA256
 - **Autenticación**: Sesiones de Flask
