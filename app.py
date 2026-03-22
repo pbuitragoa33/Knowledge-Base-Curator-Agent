@@ -16,6 +16,16 @@ from functools import wraps
 import shutil
 import re
 
+from embedding_processing import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    DEFAULT_EMBEDDING_DEVICE,
+    DEFAULT_EMBEDDING_DIMENSION,
+    DEFAULT_EMBEDDING_MODEL_NAME,
+    DeterministicEmbeddingProvider,
+    EmbeddingGenerationError,
+    LocalSentenceTransformerProvider,
+    build_embedding_payloads,
+)
 from document_processing import process_uploaded_file
 
 
@@ -27,6 +37,25 @@ app = Flask(__name__)
 app.secret_key = 'tu_clave_secreta_segura_cambiar'
 
 
+# -----------------------------
+# Helpers de Configuración
+# -----------------------------
+
+def _read_positive_int_env(variable_name, default_value):
+
+    """Lee un entero positivo desde variables de entorno."""
+
+    raw_value = os.environ.get(variable_name, default_value)
+
+    try:
+
+        return max(1, int(raw_value))
+
+    except (TypeError, ValueError):
+
+        return default_value
+
+
 # ----------------------------------------------------
 # ConfiguraciÃ³n --> extensiones, directorios y rutas
 # ----------------------------------------------------
@@ -35,8 +64,15 @@ DOWNLOAD_DIR = os.environ.get('DOWNLOAD_DIR', os.path.expanduser('~/Downloads/Up
 ALLOWED_EXTENSIONS = {'pdf', 'md', 'docx', 'txt'}
 DATABASE = os.environ.get('DATABASE_PATH', 'database.db')
 VALID_SHELF_STATUS = {'borrador', 'publicado'}
+EMBEDDING_MODEL_NAME = os.environ.get('EMBEDDING_MODEL_NAME', DEFAULT_EMBEDDING_MODEL_NAME)
+EMBEDDING_BATCH_SIZE = _read_positive_int_env('EMBEDDING_BATCH_SIZE', DEFAULT_EMBEDDING_BATCH_SIZE)
+EMBEDDING_DEVICE = os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE)
+EMBEDDING_DIMENSION = DEFAULT_EMBEDDING_DIMENSION
 CHUNK_REGISTRY = {}
 UPLOAD_CHUNK_INDEX = {}
+EMBEDDING_REGISTRY = {}
+UPLOAD_EMBEDDING_INDEX = {}
+EMBEDDING_PROVIDER = None
 
 
 # -----------------------------------------
@@ -443,6 +479,32 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def get_embedding_provider():
+
+    """Inicializa el proveedor de embeddings solo cuando es necesario."""
+
+    global EMBEDDING_PROVIDER
+
+    if EMBEDDING_PROVIDER is None:
+
+        if app.config.get('TESTING'):
+
+            EMBEDDING_PROVIDER = DeterministicEmbeddingProvider(
+                embedding_dimension=EMBEDDING_DIMENSION,
+            )
+
+        else:
+
+            EMBEDDING_PROVIDER = LocalSentenceTransformerProvider(
+                model_name=EMBEDDING_MODEL_NAME,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                device=EMBEDDING_DEVICE,
+                embedding_dimension=EMBEDDING_DIMENSION,
+            )
+
+    return EMBEDDING_PROVIDER
+
+
 def register_chunk_records(upload_hash, chunk_records):
 
     """Mantiene el registro temporal chunk -> snapshot de subida."""
@@ -456,6 +518,55 @@ def register_chunk_records(upload_hash, chunk_records):
         upload_chunk_ids.append(chunk_id)
 
     return upload_chunk_ids
+
+
+def register_embedding_payloads(upload_hash, embedding_payloads):
+
+    """Mantiene el registro temporal chunk -> embedding asociado."""
+
+    upload_embedding_ids = UPLOAD_EMBEDDING_INDEX.setdefault(upload_hash, [])
+
+    for payload in embedding_payloads:
+
+        chunk_id = payload['chunk_id']
+        EMBEDDING_REGISTRY[chunk_id] = payload
+        upload_embedding_ids.append(chunk_id)
+
+    return upload_embedding_ids
+
+
+def clear_upload_staging(upload_hash):
+
+    """Limpia los registros temporales de chunks y embeddings de una subida."""
+
+    chunk_ids = UPLOAD_CHUNK_INDEX.pop(upload_hash, [])
+
+    for chunk_id in chunk_ids:
+        CHUNK_REGISTRY.pop(chunk_id, None)
+
+    embedding_ids = UPLOAD_EMBEDDING_INDEX.pop(upload_hash, [])
+
+    for chunk_id in embedding_ids:
+        EMBEDDING_REGISTRY.pop(chunk_id, None)
+
+
+def remove_uploaded_files(filepaths):
+
+    """Elimina archivos creados durante una subida fallida."""
+
+    for filepath in filepaths:
+
+        if not filepath:
+            continue
+
+        try:
+
+            if os.path.exists(filepath):
+                os.remove(filepath)
+
+        except OSError:
+
+            app.logger.warning('Failed to remove uploaded file after rollback: %s', filepath)
 
 
 # -------------------------------------------------
@@ -759,13 +870,14 @@ def upload_files():
     upload_hash = generate_hash(str(datetime.now()) + user)
     
     uploaded_files = []
-    registered_chunk_ids = []
+    created_filepaths = []
     
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
 
     try:
         UPLOAD_CHUNK_INDEX[upload_hash] = []
+        UPLOAD_EMBEDDING_INDEX[upload_hash] = []
 
         for file in files:
 
@@ -776,6 +888,7 @@ def upload_files():
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
                 filepath = os.path.join(DOWNLOAD_DIR, timestamp + filename)
                 file.save(filepath)
+                created_filepaths.append(filepath)
                 
                 file_hash = generate_file_hash(filepath)
                 
@@ -825,8 +938,14 @@ def upload_files():
                     file_hash=file_hash,
                 )
 
-                registered_ids = register_chunk_records(upload_hash, chunk_records)
-                registered_chunk_ids = list(registered_ids)
+                register_chunk_records(upload_hash, chunk_records)
+
+                embedding_payloads = build_embedding_payloads(
+                    chunk_records,
+                    provider=get_embedding_provider(),
+                    embedding_dimension=EMBEDDING_DIMENSION,
+                )
+                register_embedding_payloads(upload_hash, embedding_payloads)
 
                 if not chunk_records:
                     app.logger.warning('No chunks generated for uploaded file: %s', filename)
@@ -841,8 +960,7 @@ def upload_files():
         
         if not uploaded_files:
 
-            UPLOAD_CHUNK_INDEX.pop(upload_hash, None)
-            conn.close()
+            clear_upload_staging(upload_hash)
 
             return jsonify({'error': 'No valid files provided'}), 400
         
@@ -855,14 +973,19 @@ def upload_files():
             'upload_date': upload_date
         })
 
+    except EmbeddingGenerationError as e:
+
+        conn.rollback()
+        clear_upload_staging(upload_hash)
+        remove_uploaded_files(created_filepaths)
+        app.logger.exception('Embedding generation failed during upload.')
+        return jsonify({'error': str(e)}), 500
+
     except Exception as e:
 
         conn.rollback()
-
-        for chunk_id in registered_chunk_ids:
-            CHUNK_REGISTRY.pop(chunk_id, None)
-
-        UPLOAD_CHUNK_INDEX.pop(upload_hash, None)
+        clear_upload_staging(upload_hash)
+        remove_uploaded_files(created_filepaths)
         return jsonify({'error': str(e)}), 500
 
     finally:

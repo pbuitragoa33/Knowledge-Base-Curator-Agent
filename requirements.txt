@@ -3,3 +3,4 @@ Werkzeug==2.3.7
 pypdf==5.4.0
 python-docx==1.1.2
 langchain-text-splitters==0.3.8
+sentence-transformers==3.4.1
