@@ -253,6 +253,8 @@ Cada comentario incluye:
 - **Backend**: Flask 
 - **Embeddings**: sentence-transformers (modelo local `all-MiniLM-L6-v2`)
 - **Frontend**: HTML5, CSS3, JavaScript 
+- `CHROMA_PERSIST_DIR` permite cambiar la ruta de persistencia local; por defecto se usa `./.chroma` y esa carpeta queda ignorada por Git
+- **Vector Store**: ChromaDB persistente con una colección separada por curso
 - **Hashing**: SHA256
 - **Autenticación**: Sesiones de Flask
 - **Validación**: Extensiones de archivo, duplicados, límites de caracteres

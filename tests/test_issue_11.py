@@ -5,11 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-TEST_ROOT = Path(__file__).resolve().parents[1] / ".tmp_validation" / "issue11_tests"
+TEST_ROOT = Path(__file__).resolve().parent / ".tmp_validation" / "issue11_tests"
 TEST_ROOT.mkdir(parents=True, exist_ok=True)
 
 os.environ.setdefault("DATABASE_PATH", str(TEST_ROOT / "bootstrap.db"))
 os.environ.setdefault("DOWNLOAD_DIR", str(TEST_ROOT / "bootstrap_uploads"))
+os.environ.setdefault("CHROMA_PERSIST_DIR", str(TEST_ROOT / "bootstrap_chroma"))
 
 import app as app_module
 from docx import Document
@@ -21,6 +22,7 @@ from document_processing import (
     process_uploaded_file,
     split_text,
 )
+from vector_store import reset_vector_store_client
 
 
 def write_text_pdf(filepath: Path, text: str) -> None:
@@ -74,10 +76,13 @@ class Issue11ImplementationTests(unittest.TestCase):
         cls.base_dir.mkdir(parents=True, exist_ok=True)
         cls.database_path = cls.base_dir / "test.db"
         cls.download_dir = cls.base_dir / "uploads"
+        cls.chroma_dir = cls.base_dir / "chroma"
         cls.download_dir.mkdir(parents=True, exist_ok=True)
+        cls.chroma_dir.mkdir(parents=True, exist_ok=True)
 
         app_module.DATABASE = str(cls.database_path)
         app_module.DOWNLOAD_DIR = str(cls.download_dir)
+        os.environ["CHROMA_PERSIST_DIR"] = str(cls.chroma_dir)
         os.makedirs(app_module.DOWNLOAD_DIR, exist_ok=True)
         app_module.app.config["TESTING"] = True
 
@@ -86,15 +91,22 @@ class Issue11ImplementationTests(unittest.TestCase):
         shutil.rmtree(cls.base_dir, ignore_errors=True)
 
     def setUp(self):
+        reset_vector_store_client()
+
         if self.database_path.exists():
             self.database_path.unlink()
 
         if self.download_dir.exists():
             shutil.rmtree(self.download_dir)
 
+        if self.chroma_dir.exists():
+            shutil.rmtree(self.chroma_dir)
+
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.chroma_dir.mkdir(parents=True, exist_ok=True)
         app_module.CHUNK_REGISTRY.clear()
         app_module.UPLOAD_CHUNK_INDEX.clear()
+        app_module.EMBEDDING_PROVIDER = None
         app_module.init_db()
         self.client = app_module.app.test_client()
 
