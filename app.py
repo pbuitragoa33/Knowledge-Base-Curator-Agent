@@ -27,6 +27,11 @@ from embedding_processing import (
     build_embedding_payloads,
 )
 from document_processing import process_uploaded_file
+from vector_store import (
+    VectorStoreError,
+    delete_course_embeddings,
+    upsert_course_embeddings,
+)
 
 
 # ----------
@@ -871,11 +876,22 @@ def upload_files():
     
     uploaded_files = []
     created_filepaths = []
+    all_embedding_payloads = []
+    course_code = None
+    persisted_vector_ids = []
     
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
 
     try:
+        c.execute("SELECT course_code FROM courses WHERE name = ?", (course,))
+        course_row = c.fetchone()
+
+        if not course_row:
+
+            return jsonify({'error': 'Invalid course selected'}), 400
+
+        course_code = course_row[0]
         UPLOAD_CHUNK_INDEX[upload_hash] = []
         UPLOAD_EMBEDDING_INDEX[upload_hash] = []
 
@@ -946,6 +962,7 @@ def upload_files():
                     embedding_dimension=EMBEDDING_DIMENSION,
                 )
                 register_embedding_payloads(upload_hash, embedding_payloads)
+                all_embedding_payloads.extend(embedding_payloads)
 
                 if not chunk_records:
                     app.logger.warning('No chunks generated for uploaded file: %s', filename)
@@ -963,6 +980,8 @@ def upload_files():
             clear_upload_staging(upload_hash)
 
             return jsonify({'error': 'No valid files provided'}), 400
+
+        persisted_vector_ids = upsert_course_embeddings(course_code, all_embedding_payloads)
         
         conn.commit()
 
@@ -973,17 +992,31 @@ def upload_files():
             'upload_date': upload_date
         })
 
-    except EmbeddingGenerationError as e:
+    except (EmbeddingGenerationError, VectorStoreError) as e:
 
         conn.rollback()
+
+        if persisted_vector_ids and course_code:
+            try:
+                delete_course_embeddings(course_code, persisted_vector_ids)
+            except VectorStoreError:
+                app.logger.exception('Failed to rollback persisted embeddings for upload: %s', upload_hash)
+
         clear_upload_staging(upload_hash)
         remove_uploaded_files(created_filepaths)
-        app.logger.exception('Embedding generation failed during upload.')
+        app.logger.exception('Upload processing failed during embedding/vector persistence.')
         return jsonify({'error': str(e)}), 500
 
     except Exception as e:
 
         conn.rollback()
+
+        if persisted_vector_ids and course_code:
+            try:
+                delete_course_embeddings(course_code, persisted_vector_ids)
+            except VectorStoreError:
+                app.logger.exception('Failed to rollback persisted embeddings for upload: %s', upload_hash)
+
         clear_upload_staging(upload_hash)
         remove_uploaded_files(created_filepaths)
         return jsonify({'error': str(e)}), 500

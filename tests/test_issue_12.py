@@ -10,6 +10,7 @@ TEST_ROOT.mkdir(parents=True, exist_ok=True)
 
 os.environ.setdefault("DATABASE_PATH", str(TEST_ROOT / "bootstrap.db"))
 os.environ.setdefault("DOWNLOAD_DIR", str(TEST_ROOT / "bootstrap_uploads"))
+os.environ.setdefault("CHROMA_PERSIST_DIR", str(TEST_ROOT / "bootstrap_chroma"))
 
 import app as app_module
 from document_processing import build_chunk_records
@@ -18,6 +19,7 @@ from embedding_processing import (
     EmbeddingGenerationError,
     build_embedding_payloads,
 )
+from vector_store import reset_vector_store_client
 
 
 class StubEmbeddingProvider:
@@ -40,10 +42,13 @@ class Issue12ImplementationTests(unittest.TestCase):
         cls.base_dir.mkdir(parents=True, exist_ok=True)
         cls.database_path = cls.base_dir / "test.db"
         cls.download_dir = cls.base_dir / "uploads"
+        cls.chroma_dir = cls.base_dir / "chroma"
         cls.download_dir.mkdir(parents=True, exist_ok=True)
+        cls.chroma_dir.mkdir(parents=True, exist_ok=True)
 
         app_module.DATABASE = str(cls.database_path)
         app_module.DOWNLOAD_DIR = str(cls.download_dir)
+        os.environ["CHROMA_PERSIST_DIR"] = str(cls.chroma_dir)
         os.makedirs(app_module.DOWNLOAD_DIR, exist_ok=True)
         app_module.app.config["TESTING"] = True
 
@@ -52,13 +57,19 @@ class Issue12ImplementationTests(unittest.TestCase):
         shutil.rmtree(cls.base_dir, ignore_errors=True)
 
     def setUp(self):
+        reset_vector_store_client()
+
         if self.database_path.exists():
             self.database_path.unlink()
 
         if self.download_dir.exists():
             shutil.rmtree(self.download_dir)
 
+        if self.chroma_dir.exists():
+            shutil.rmtree(self.chroma_dir)
+
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.chroma_dir.mkdir(parents=True, exist_ok=True)
         app_module.CHUNK_REGISTRY.clear()
         app_module.UPLOAD_CHUNK_INDEX.clear()
         app_module.EMBEDDING_REGISTRY.clear()
