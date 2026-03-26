@@ -19,7 +19,9 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Documentos globales y persistentes en la base de datos local SQLite.
 * Subir documentos (PDF, MD, DOCX, TXT) mediante drag & drop.
 * Sistema de versionado de documentos y visualización de diferencias (Diff) para documentos de texto/markdown.
-* Generación local de embeddings por chunk con metadatos asociados, lista para integrarse con una vector store en el siguiente sprint.
+* Generación local de embeddings por chunk con metadatos asociados y persistencia en ChromaDB por curso.
+* Sincronización automática SQLite + ChromaDB al versionar o eliminar documentos (limpieza de chunks obsoletos).
+* Búsqueda semántica en lenguaje natural (Top-N configurable) dentro del curso seleccionado.
 * Descarga directa de archivos de las distintas versiones subidas.
 * Comentarios de Estudiantes que son visibles solo para profesor/admin.
 * Hash SHA256 para cada documento y cada subida.
@@ -32,18 +34,31 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 
 ```
 Knowledge Base Curator Agent/
-├── app.py                 # Servidor Flask con toda la lógica (Orquestador)
-├── requirements.txt       # Dependencias Python
-├── database.db           # Base de datos SQLite
+├── app.py                    # Servidor Flask con la lógica principal (orquestador)
+├── document_processing.py    # Extracción/chunking de texto por archivo
+├── embedding_processing.py   # Proveedores y payloads de embeddings
+├── vector_store.py           # Persistencia y consultas en ChromaDB
+├── requirements.txt          # Dependencias Python
+├── database.db               # Base de datos SQLite
+├── README.md                 # Documentación del proyecto
 ├── templates/
-│   ├── login.html        # Página de autenticación
-│   ├── signup.html       # Página de registro de usuarios
-│   ├── index.html        # Página de gestión de cursos
-│   └── upload.html       # Página de documentos y comentarios
+│   ├── login.html            # Página de autenticación
+│   ├── signup.html           # Página de registro de usuarios
+│   ├── index.html            # Página de gestión de cursos
+│   └── upload.html           # Página de documentos, comentarios y búsqueda semántica
 ├── static/
-│   └── style.css         # Estilos CSS
-├── run.bat               # Script de ejecución automática (Windows)
-└── run.ps1               # Script PowerShell alternativo
+│   └── style.css            # Estilos CSS
+├── tests/
+│   ├── run_issue_suite.py   # Suite integrada de validación (Issues 11-15)
+│   ├── test_issue_11.py
+│   ├── test_issue_12.py
+│   ├── test_issue_13.py
+│   ├── test_issue_14.py
+│   └── test_issue_15.py
+├── run.bat                  # Script de ejecución automática (Windows)
+├── run.ps1                  # Script PowerShell alternativo
+├── .chroma/                 # Persistencia local de ChromaDB
+└── venv_project/            # Entorno virtual local (opcional)
 ```
 
 ## Instalación y Ejecución
@@ -246,6 +261,44 @@ Cada comentario incluye:
 ### Comentarios
 - `GET /api/comments/<document_id>` - Obtiene comentarios (admin/profesor)
 - `POST /api/add-comment` - Agrega un comentario (estudiante)
+
+### Consulta Semántica 
+- `POST /api/query` - Ejecuta búsqueda semántica por curso y devuelve Top-N resultados con:
+  - `chunk_text`
+  - `score`
+  - `source.filename`
+  - `source.upload_date`
+
+
+### Sincronización de Vector Store en Eliminación y Versionado
+
+- Al eliminar un documento (`DELETE /api/delete-document/<id>`), se eliminan también sus chunks en ChromaDB usando filtro por `doc_hash`.
+- Al subir una nueva versión (`POST /api/upload` con mismo nombre en el curso), se eliminan primero los chunks de la versión anterior antes de indexar los nuevos.
+- Si ocurre un error de vector store durante eliminación/versionado, SQLite hace rollback para mantener consistencia transaccional.
+
+###Búsqueda y Recuperación en Lenguaje Natural
+
+- Se implementó el endpoint `POST /api/query` para consultar documentos del curso actual.
+- La consulta se vectoriza con el mismo modelo de embeddings local (`all-MiniLM-L6-v2`).
+- La búsqueda se ejecuta exclusivamente en la colección Chroma del curso seleccionado.
+- Se devuelve JSON con resultados rankeados por similitud y metadatos de fuente.
+
+### Interfaz de Usuario (UI)
+
+- Se agregó una sección separada de "Consulta Semántica del Curso" para Admin, Profesor y Estudiante.
+- La UI incluye selector Top-N con valores fijos: `1`, `3`, `5`, `10`.
+- Cada resultado se muestra como tarjeta con:
+  - Chunk de texto
+  - Score de similitud
+  - Nombre del archivo
+  - Fecha de subida
+- Para chunks largos se incorporó interacción "Ver más / Ver menos".
+
+### Pruebas
+
+- Se añadieron pruebas de Issue 14 en `tests/test_issue_14.py` (sincronización y rollback).
+- Se añadieron pruebas de Issue 15 en `tests/test_issue_15.py` (respuesta, alcance por curso y validaciones).
+- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15 en conjunto.
 
 ## Stack
 
