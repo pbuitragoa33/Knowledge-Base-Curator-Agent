@@ -429,3 +429,6 @@ __pycache__/
 
 *.db
 .chroma/
+
+# Archivos Temporales/Logs/Configuración
+.tmp_validation/
