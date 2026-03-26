@@ -729,6 +729,10 @@ body {
     border-top: 4px solid #667eea;
 }
 
+.semantic-search-card {
+    border-top: 4px solid #1f8d7b;
+}
+
 .documents-card h2,
 .comments-card h2,
 .comments-form-card h2 {
@@ -736,6 +740,130 @@ body {
     margin-bottom: 20px;
     border-bottom: 1px solid #e0e0e0;
     padding-bottom: 10px;
+}
+
+.semantic-search-card h2 {
+    color: #21665c;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #d9efea;
+    padding-bottom: 10px;
+}
+
+.semantic-search-controls {
+    margin-top: 12px;
+}
+
+.semantic-query-input {
+    min-height: 110px;
+    margin-bottom: 14px;
+}
+
+.semantic-search-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.semantic-topn-label {
+    color: #555;
+    font-weight: 600;
+}
+
+.semantic-topn-select {
+    width: 90px;
+    margin-bottom: 0;
+}
+
+.semantic-search-btn {
+    width: auto;
+    margin-top: 0;
+    min-width: 140px;
+}
+
+.semantic-results {
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.semantic-result-card {
+    background: #f4fbf9;
+    border: 1px solid #cae6e0;
+    border-left: 4px solid #1f8d7b;
+    border-radius: 8px;
+    padding: 14px;
+}
+
+.semantic-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.semantic-rank {
+    color: #21665c;
+    font-weight: 700;
+}
+
+.semantic-score {
+    color: #1f8d7b;
+    background: #e7f4f1;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 0.9em;
+}
+
+.semantic-source {
+    color: #4f5a58;
+    margin-bottom: 6px;
+    font-size: 0.92em;
+}
+
+.semantic-chunk-text {
+    color: #2c3533;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.semantic-chunk-text.is-collapsed {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden;
+}
+
+.semantic-toggle-btn {
+    border: none;
+    background: transparent;
+    color: #1f8d7b;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0;
+}
+
+.semantic-toggle-btn:hover {
+    color: #1a7568;
+    text-decoration: underline;
+}
+
+@media (max-width: 700px) {
+    .semantic-search-actions {
+        align-items: stretch;
+    }
+
+    .semantic-topn-select {
+        width: 100%;
+    }
+
+    .semantic-search-btn {
+        width: 100%;
+    }
 }
 
 /* Lista de documentos */
