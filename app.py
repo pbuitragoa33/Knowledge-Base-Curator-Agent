@@ -35,7 +35,7 @@ from vector_store import (
     get_course_embeddings_by_metadata,
     upsert_course_embeddings,
 )
-
+from keyword_search import bm25_search, reciprocal_rank_fusion
 
 # ----------
 # En Flask
@@ -208,7 +208,6 @@ def resolve_course_context(cursor, *, course_id = None, course_name = None, cour
 
 
 # Crear tabla de cursos
-
 def _create_courses_table(cursor, table_name = 'courses'):
 
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS {table_name}
@@ -217,6 +216,7 @@ def _create_courses_table(cursor, table_name = 'courses'):
                   course_code TEXT NOT NULL,
                   responsible_teacher TEXT NOT NULL,
                   status TEXT NOT NULL CHECK(status IN ('borrador', 'publicado')),
+                  search_strategy TEXT NOT NULL DEFAULT 'semantic',
                   created_by TEXT,
                   created_date TEXT)''')
 
@@ -258,7 +258,7 @@ def _next_unique_course_code(base_code, used_codes):
 
 def _ensure_courses_schema(con, cursor):
 
-    expected_columns = ['id', 'name', 'course_code', 'responsible_teacher', 'status', 'created_by', 'created_date']
+    expected_columns = ['id', 'name', 'course_code', 'responsible_teacher', 'status', 'search_strategy', 'created_by', 'created_date']
     cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'courses'")
     table_exists = cursor.fetchone() is not None
 
@@ -337,8 +337,14 @@ def _ensure_courses_schema(con, cursor):
 
             status = 'borrador'
 
+        search_strategy = str(row.get('search_strategy') or 'semantic').strip().lower()
+
+        if search_strategy not in ('semantic', 'keyword', 'hybrid'):
+
+            search_strategy = 'semantic'
+
         migrated_rows.append(
-            (course_id, course_name, unique_code, responsible_teacher, status, created_by, created_date)
+            (course_id, course_name, unique_code, responsible_teacher, status, search_strategy, created_by, created_date)
         )
 
     con.execute("PRAGMA foreign_keys = OFF")
@@ -348,8 +354,8 @@ def _ensure_courses_schema(con, cursor):
     _create_courses_table(cursor, table_name = 'courses_new')
 
     cursor.executemany('''INSERT INTO courses_new
-                          (id, name, course_code, responsible_teacher, status, created_by, created_date)
-                          VALUES (?, ?, ?, ?, ?, ?, ?)''', migrated_rows)
+                          (id, name, course_code, responsible_teacher, status, search_strategy, created_by, created_date)
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', migrated_rows)
     cursor.execute("DROP TABLE courses")
     cursor.execute("ALTER TABLE courses_new RENAME TO courses")
     _create_courses_indexes(cursor)
@@ -492,6 +498,20 @@ def init_db():
         c.executemany('''INSERT INTO courses
                          (name, course_code, responsible_teacher, status, created_by, created_date)
                          VALUES (?, ?, ?, ?, ?, ?)''', default_courses)
+    
+    # Tabla de Métricas de Recuperación
+
+    c.execute('''CREATE TABLE IF NOT EXISTS retrieval_metrics
+             (id INTEGER PRIMARY KEY,
+              timestamp TEXT NOT NULL,
+              course_name TEXT NOT NULL,
+              course_code TEXT NOT NULL,
+              query_text TEXT NOT NULL,
+              search_strategy TEXT NOT NULL,
+              top_n INTEGER NOT NULL,
+              returned_doc_ids TEXT NOT NULL,
+              scores TEXT NOT NULL,
+              user TEXT NOT NULL)''')
 
     con.commit()
     con.close()
@@ -699,6 +719,26 @@ def generate_file_hash(filepath):
             hash_sha256.update(chunk)
 
     return hash_sha256.hexdigest()[:8]
+
+def save_retrieval_metrics(course_name, course_code, query_text, strategy, top_n, results, user):
+    """Guarda métricas de una consulta en retrieval_metrics de forma no bloqueante."""
+    try:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        doc_ids = json.dumps([r.get('metadata', {}).get('doc_hash', '') for r in results])
+        scores = json.dumps([round(r.get('score', 0.0), 6) for r in results])
+
+        con = sqlite3.connect(DATABASE)
+        c = con.cursor()
+        c.execute('''INSERT INTO retrieval_metrics
+                     (timestamp, course_name, course_code, query_text, search_strategy,
+                      top_n, returned_doc_ids, scores, user)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (timestamp, course_name, course_code, query_text, strategy,
+                   top_n, doc_ids, scores, user))
+        con.commit()
+        con.close()
+    except Exception:
+        app.logger.warning('No se pudieron guardar las métricas de la consulta.')
 
 
 # -------------------------------------------------
@@ -1231,14 +1271,12 @@ def get_documents(course):
 @login_required
 
 def query_course_documents():
-
-    """Issue 15: consulta semóntica por curso con recuperación Top-N."""
+    """Consulta semántica, keyword (BM25) o híbrida según la estrategia del curso."""
 
     data = request.json or {}
     query_text = (data.get('query') or data.get('question') or '').strip()
 
     if not query_text:
-
         return jsonify({'error': 'La consulta es requerida'}), 400
 
     raw_course_id = data.get('course_id')
@@ -1247,97 +1285,121 @@ def query_course_documents():
     raw_top_n = data.get('top_n', QUERY_TOP_N_DEFAULT)
 
     try:
-
         top_n = int(raw_top_n)
-
     except (TypeError, ValueError):
-
         return jsonify({'error': 'top_n debe ser un entero positivo'}), 400
 
     if top_n < 1:
-
         return jsonify({'error': 'top_n debe ser mayor o igual a 1'}), 400
 
     top_n = min(top_n, QUERY_TOP_N_MAX)
 
     course_id = None
-
     if raw_course_id is not None and str(raw_course_id).strip() != '':
-       
         try:
-
             course_id = int(raw_course_id)
-
         except (TypeError, ValueError):
-
-            return jsonify({'error': 'course_id debe ser numórico'}), 400
+            return jsonify({'error': 'course_id debe ser numérico'}), 400
 
     con = sqlite3.connect(DATABASE)
     c = con.cursor()
 
     course_context = resolve_course_context(
         c,
-        course_id = course_id,
-        course_name = course_name,
-        course_code = course_code,
+        course_id=course_id,
+        course_name=course_name,
+        course_code=course_code,
     )
-    con.close()
 
     if not course_context:
-
+        con.close()
         return jsonify({'error': 'Curso no encontrado'}), 404
 
     resolved_course_id, resolved_course_name, resolved_course_code = course_context
 
-    try:
+    # Obtener estrategia de búsqueda del curso
+    c.execute("SELECT search_strategy FROM courses WHERE id = ?", (resolved_course_id,))
+    strategy_row = c.fetchone()
+    search_strategy = strategy_row[0] if strategy_row and strategy_row[0] else 'semantic'
+    con.close()
 
+    try:
         query_embedding = get_embedding_provider().embed_texts([query_text])[0]
-        ranked_results = query_course_embeddings(
+
+        # --- Búsqueda Semántica ---
+        semantic_results = query_course_embeddings(
             resolved_course_code,
             query_embedding,
-            top_n = top_n,
+            top_n=top_n,
         )
+
+        if search_strategy == 'semantic':
+            ranked_results = semantic_results
+
+        elif search_strategy == 'keyword':
+            all_chunks = query_course_embeddings(
+                resolved_course_code,
+                query_embedding,
+                top_n=QUERY_TOP_N_MAX,
+            )
+            ranked_results = bm25_search(query_text, all_chunks, top_n=top_n)
+
+        elif search_strategy == 'hybrid':
+            all_chunks = query_course_embeddings(
+                resolved_course_code,
+                query_embedding,
+                top_n=QUERY_TOP_N_MAX,
+            )
+            keyword_results = bm25_search(query_text, all_chunks, top_n=top_n)
+            ranked_results = reciprocal_rank_fusion(semantic_results, keyword_results, top_n=top_n)
+
+        else:
+            ranked_results = semantic_results
 
     except (EmbeddingGenerationError, VectorStoreError) as e:
-
-        app.logger.exception('Fallo en la consulta semántica para el curso %s', resolved_course_code)
-        
+        app.logger.exception('Fallo en la consulta para el curso %s', resolved_course_code)
         return jsonify({'error': str(e)}), 500
 
+    # Guardar métricas sin bloquear la respuesta
+    save_retrieval_metrics(
+        course_name=resolved_course_name,
+        course_code=resolved_course_code,
+        query_text=query_text,
+        strategy=search_strategy,
+        top_n=top_n,
+        results=ranked_results,
+        user=session.get('user', 'unknown'),
+    )
+
     response_results = []
-
     for result in ranked_results:
-        
         metadata = result.get('metadata', {})
-        response_results.append(
-            {
-                'chunk_text': result.get('text', ''),
-                'score': result.get('score', 0.0),
-                'source': {
-                    'filename': metadata.get('filename'),
-                    'upload_date': metadata.get('upload_date'),
-                },
-                'metadata': {
-                    'doc_hash': metadata.get('doc_hash'),
-                    'upload_hash': metadata.get('upload_hash'),
-                    'chunk_index': metadata.get('chunk_index'),
-                    'course_code': metadata.get('course_code'),
-                },
-            }
-        )
-
-    return jsonify(
-        {
-            'course': {
-                'id': resolved_course_id,
-                'name': resolved_course_name,
-                'course_code': resolved_course_code,
+        response_results.append({
+            'chunk_text': result.get('text', ''),
+            'score': result.get('score', 0.0),
+            'source': {
+                'filename': metadata.get('filename'),
+                'upload_date': metadata.get('upload_date'),
             },
-            'query': query_text,
-            'top_n': top_n,
-            'results': response_results,
-        }
-    ), 200
+            'metadata': {
+                'doc_hash': metadata.get('doc_hash'),
+                'upload_hash': metadata.get('upload_hash'),
+                'chunk_index': metadata.get('chunk_index'),
+                'course_code': metadata.get('course_code'),
+            },
+        })
+
+    return jsonify({
+        'course': {
+            'id': resolved_course_id,
+            'name': resolved_course_name,
+            'course_code': resolved_course_code,
+            'search_strategy': search_strategy,
+        },
+        'query': query_text,
+        'top_n': top_n,
+        'results': response_results,
+    }), 200
 
 
 # Obtener comentarios hechos por los estudiantes
@@ -2397,7 +2459,79 @@ def remove_student():
         con.close()
 
         return jsonify({'error': str(e)}), 500
+    
+# Actualizar estrategia de búsqueda de un curso
+@app.route('/api/course-search-strategy/<int:course_id>', methods=['PUT'])
+@admin_required
 
+def update_search_strategy(course_id):
+    """Actualiza la estrategia de búsqueda de un curso (solo admin/profesor)."""
+
+    data = request.json or {}
+    strategy = data.get('search_strategy', '').strip().lower()
+
+    if strategy not in ('semantic', 'keyword', 'hybrid'):
+        return jsonify({'error': 'Estrategia inválida. Use: semantic, keyword o hybrid'}), 400
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+
+    c.execute("SELECT id FROM courses WHERE id = ?", (course_id,))
+    if not c.fetchone():
+        con.close()
+        return jsonify({'error': 'Curso no encontrado'}), 404
+
+    try:
+        c.execute("UPDATE courses SET search_strategy = ? WHERE id = ?", (strategy, course_id))
+        con.commit()
+        con.close()
+        return jsonify({'success': True, 'search_strategy': strategy}), 200
+    except Exception as e:
+        con.close()
+        return jsonify({'error': str(e)}), 500
+
+# Consultar métricas de recuperación
+@app.route('/api/retrieval-metrics', methods=['GET'])
+@admin_required
+def get_retrieval_metrics():
+    """Retorna las métricas de consultas realizadas (solo admin/profesor)."""
+
+    course_code = request.args.get('course_code', '').strip()
+    limit = min(int(request.args.get('limit', 50)), 200)
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+
+    if course_code:
+        c.execute('''SELECT timestamp, course_name, course_code, query_text,
+                            search_strategy, top_n, returned_doc_ids, scores, user
+                     FROM retrieval_metrics
+                     WHERE course_code = ?
+                     ORDER BY timestamp DESC LIMIT ?''', (course_code, limit))
+    else:
+        c.execute('''SELECT timestamp, course_name, course_code, query_text,
+                            search_strategy, top_n, returned_doc_ids, scores, user
+                     FROM retrieval_metrics
+                     ORDER BY timestamp DESC LIMIT ?''', (limit,))
+
+    rows = c.fetchall()
+    con.close()
+
+    metrics = []
+    for row in rows:
+        metrics.append({
+            'timestamp': row[0],
+            'course_name': row[1],
+            'course_code': row[2],
+            'query_text': row[3],
+            'search_strategy': row[4],
+            'top_n': row[5],
+            'returned_doc_ids': json.loads(row[6]),
+            'scores': json.loads(row[7]),
+            'user': row[8],
+        })
+
+    return jsonify({'total': len(metrics), 'metrics': metrics}), 200
 
 if __name__ == '__main__':
 
