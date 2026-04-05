@@ -426,7 +426,6 @@ __pycache__/
 
 
 # Base de datos
-
 *.db
 .chroma/
 
