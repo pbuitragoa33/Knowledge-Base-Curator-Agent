@@ -419,12 +419,14 @@ FodyWeavers.xsd
 
 
 # Por si algo, para que los trackeen
-
 venv_project/
 __pycache__/
 *.pyc
 
 
 # Base de datos
-
 *.db
+*.chroma
+
+# Archivos tempprales
+tests/
