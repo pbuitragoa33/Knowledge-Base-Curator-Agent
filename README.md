@@ -21,7 +21,7 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Sistema de versionado de documentos y visualización de diferencias (Diff) para documentos de texto/markdown.
 * Generación local de embeddings por chunk con metadatos asociados y persistencia en ChromaDB por curso.
 * Sincronización automática SQLite + ChromaDB al versionar o eliminar documentos (limpieza de chunks obsoletos).
-* Búsqueda semántica en lenguaje natural (Top-N configurable) dentro del curso seleccionado.
+* Búsqueda en lenguaje natural con estrategia configurable por curso: `semantic`, `keyword (BM25)` o `hybrid`.
 * Descarga directa de archivos de las distintas versiones subidas.
 * Comentarios de Estudiantes que son visibles solo para profesor/admin.
 * Hash SHA256 para cada documento y cada subida.
@@ -29,6 +29,7 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Interfaz diferenciada por rol de usuario.
 * Confirmación antes de eliminar.
 * Interfaz moderna y responsiva.
+* Registro de métricas de recuperación por consulta (estrategia, Top-N, ids recuperados, scores y usuario).
 
 ## Estructura del Proyecto
 
@@ -269,6 +270,15 @@ Cada comentario incluye:
   - `source.filename`
   - `source.upload_date`
 
+### Estrategia de Búsqueda por Curso
+- `PUT /api/course-search-strategy/<course_id>` - Actualiza estrategia de recuperación del curso: `semantic`, `keyword` o `hybrid`.
+
+### Métricas de Recuperación
+- `GET /api/retrieval-metrics` - Consulta métricas históricas de recuperación (admin/profesor).
+- Parámetros opcionales:
+  - `course_code`: filtra por curso
+  - `limit`: máximo de registros (tope 200)
+
 
 ### Sincronización de Vector Store en Eliminación y Versionado
 
@@ -276,12 +286,50 @@ Cada comentario incluye:
 - Al subir una nueva versión (`POST /api/upload` con mismo nombre en el curso), se eliminan primero los chunks de la versión anterior antes de indexar los nuevos.
 - Si ocurre un error de vector store durante eliminación/versionado, SQLite hace rollback para mantener consistencia transaccional.
 
-###Búsqueda y Recuperación en Lenguaje Natural
+### Búsqueda y Recuperación en Lenguaje Natural
 
-- Se implementó el endpoint `POST /api/query` para consultar documentos del curso actual.
-- La consulta se vectoriza con el mismo modelo de embeddings local (`all-MiniLM-L6-v2`).
-- La búsqueda se ejecuta exclusivamente en la colección Chroma del curso seleccionado.
-- Se devuelve JSON con resultados rankeados por similitud y metadatos de fuente.
+El endpoint `POST /api/query` soporta tres estrategias, definidas en `courses.search_strategy`:
+
+- `semantic`
+  - Usa embeddings del query con `all-MiniLM-L6-v2`.
+  - Consulta la colección Chroma del curso y ordena por similitud vectorial.
+
+Para `keyword` y `hybrid` se recuperan inicialmente candidatos pero no se muestra ni se despliega al usuario en la interfaz, se guarda solo para el proceso de ranking interno.
+
+- `keyword` (BM25)
+  - Recupera chunks candidatos del curso y los reordena con `BM25Okapi` (`rank_bm25`).
+  - Prioriza coincidencias léxicas de términos del query.
+
+- `hybrid`
+  - Combina ranking semántico y ranking BM25.
+  - Usa **Reciprocal Rank Fusion (RRF)** para fusionar listas.
+  - Fórmula usada: `RRF score = 1 / (k + rank)` con `k=60`.
+
+Notas de implementación:
+- La estrategia activa se consulta por curso antes de ejecutar la búsqueda.
+- Si la estrategia no es válida o está vacía, el sistema hace fallback a `semantic`.
+- La respuesta mantiene un formato unificado (`chunk_text`, `score`, `source`, `metadata`) para las tres estrategias.
+
+### Métricas de Recuperación
+
+Cada consulta a `POST /api/query` guarda una traza en la tabla `retrieval_metrics` para análisis posterior.
+
+Campos registrados por consulta:
+- `timestamp`
+- `course_name`
+- `course_code`
+- `query_text`
+- `search_strategy`
+- `top_n`
+- `returned_doc_ids` (lista serializada en JSON)
+- `scores` (lista serializada en JSON)
+- `user`
+
+Consulta de métricas:
+- Endpoint: `GET /api/retrieval-metrics`
+- Acceso: admin/profesor
+- Filtros soportados: `course_code`, `limit`
+- Respuesta: `{ total, metrics[] }`
 
 ### Interfaz de Usuario (UI)
 
@@ -298,6 +346,7 @@ Cada comentario incluye:
 
 - Se añadieron pruebas de Issue 14 en `tests/test_issue_14.py` (sincronización y rollback).
 - Se añadieron pruebas de Issue 15 en `tests/test_issue_15.py` (respuesta, alcance por curso y validaciones).
+- Se validó estrategia de búsqueda por curso (`semantic`/`keyword`/`hybrid`) y el registro/consulta de métricas de recuperación.
 - Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15 en conjunto.
 
 ## Stack
