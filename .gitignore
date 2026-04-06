@@ -419,7 +419,6 @@ FodyWeavers.xsd
 
 
 # Por si algo, para que los trackeen
-
 venv_project/
 __pycache__/
 *.pyc
@@ -431,3 +430,7 @@ __pycache__/
 
 # Archivos Temporales/Logs/Configuración
 .tmp_validation/
+*.chroma
+
+# Archivos tempprales
+tests/
