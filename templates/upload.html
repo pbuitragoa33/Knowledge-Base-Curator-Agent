@@ -94,10 +94,32 @@
                         <p class="loading">Cargando comentarios...</p>
                     </div>
                 </div>
+                <div class="card semantic-search-card">
+                    <h2>Consulta Semántica del Curso</h2>
+                    <p class="subtitle-sm">Busca información relevante dentro de los documentos indexados del curso actual.</p>
+                    <div class="semantic-search-controls">
+                        <textarea id="semanticQueryInput" class="form-textarea semantic-query-input" placeholder="Escribe tu pregunta en lenguaje natural..."></textarea>
+                        <div class="semantic-search-actions">
+                            <label for="semanticTopNSelect" class="semantic-topn-label">Top resultados</label>
+                            <select id="semanticTopNSelect" class="form-select semantic-topn-select">
+                                <option value="1">1</option>
+                                <option value="3">3</option>
+                                <option value="5" selected>5</option>
+                                <option value="10">10</option>
+                            </select>
+                            <button id="semanticSearchBtn" class="btn btn-primary semantic-search-btn" type="button">Buscar</button>
+                        </div>
+                    </div>
+                    <div id="semanticSearchMessage" class="message"></div>
+                    <div id="semanticResultsContainer" class="semantic-results">
+                        <p class="no-data">Realiza una consulta para ver resultados</p>
+                    </div>
+                </div>
             `;
             setupFileUpload();
             await loadDocuments();
             await loadAllComments();
+            setupSemanticSearch();
         }
 
         async function loadStudentInterface() {
@@ -115,9 +137,31 @@
                         <div id="commentFormContainer"></div>
                     </div>
                 </div>
+                <div class="card semantic-search-card">
+                    <h2>Consulta Semántica del Curso</h2>
+                    <p class="subtitle-sm">Busca información relevante dentro de los documentos indexados del curso actual.</p>
+                    <div class="semantic-search-controls">
+                        <textarea id="semanticQueryInput" class="form-textarea semantic-query-input" placeholder="Escribe tu pregunta en lenguaje natural..."></textarea>
+                        <div class="semantic-search-actions">
+                            <label for="semanticTopNSelect" class="semantic-topn-label">Top resultados</label>
+                            <select id="semanticTopNSelect" class="form-select semantic-topn-select">
+                                <option value="1">1</option>
+                                <option value="3">3</option>
+                                <option value="5" selected>5</option>
+                                <option value="10">10</option>
+                            </select>
+                            <button id="semanticSearchBtn" class="btn btn-primary semantic-search-btn" type="button">Buscar</button>
+                        </div>
+                    </div>
+                    <div id="semanticSearchMessage" class="message"></div>
+                    <div id="semanticResultsContainer" class="semantic-results">
+                        <p class="no-data">Realiza una consulta para ver resultados</p>
+                    </div>
+                </div>
             `;
             await loadDocuments();
             setupCommentForm();
+            setupSemanticSearch();
         }
 
         function setupFileUpload() {
@@ -333,6 +377,106 @@
                 console.error('Error:', error);
             }
         }
+
+        function escapeSemanticHtml(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function setupSemanticSearch() {
+            const searchBtn = document.getElementById('semanticSearchBtn');
+            const queryInput = document.getElementById('semanticQueryInput');
+            const topNSelect = document.getElementById('semanticTopNSelect');
+            const resultsContainer = document.getElementById('semanticResultsContainer');
+            const messageContainer = document.getElementById('semanticSearchMessage');
+
+            if (!searchBtn || !queryInput || !topNSelect || !resultsContainer || !messageContainer) {
+                return;
+            }
+
+            searchBtn.addEventListener('click', async () => {
+                const queryText = queryInput.value.trim();
+                const topN = parseInt(topNSelect.value, 10);
+
+                if (!queryText) {
+                    messageContainer.innerHTML = '<div class="error-message">Escribe una pregunta para consultar.</div>';
+                    return;
+                }
+
+                messageContainer.innerHTML = '';
+                resultsContainer.innerHTML = '<p class="loading">Buscando fragmentos relevantes...</p>';
+                searchBtn.disabled = true;
+
+                try {
+                    const response = await fetch('/api/query', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            course: course,
+                            query: queryText,
+                            top_n: topN,
+                        }),
+                    });
+
+                    const payload = await response.json();
+
+                    if (!response.ok) {
+                        messageContainer.innerHTML = `<div class="error-message">Error: ${escapeSemanticHtml(payload.error || 'No se pudo realizar la consulta')}</div>`;
+                        resultsContainer.innerHTML = '<p class="no-data">No hay resultados para mostrar.</p>';
+                        return;
+                    }
+
+                    const results = Array.isArray(payload.results) ? payload.results : [];
+
+                    if (results.length === 0) {
+                        resultsContainer.innerHTML = '<p class="no-data">No se encontraron fragmentos para esta consulta.</p>';
+                        return;
+                    }
+
+                    resultsContainer.innerHTML = results.map((result, index) => {
+                        const chunkText = String(result.chunk_text || '');
+                        const score = Number(result.score || 0);
+                        const filename = result.source && result.source.filename ? result.source.filename : 'Fuente desconocida';
+                        const uploadDate = result.source && result.source.upload_date ? result.source.upload_date : 'Fecha no disponible';
+                        const needsToggle = chunkText.length > 300;
+                        const chunkId = `semanticChunk-${index}`;
+
+                        return `
+                            <article class="semantic-result-card">
+                                <div class="semantic-result-header">
+                                    <span class="semantic-rank">#${index + 1}</span>
+                                    <span class="semantic-score">Score: ${score.toFixed(4)}</span>
+                                </div>
+                                <p class="semantic-source"><strong>Archivo:</strong> ${escapeSemanticHtml(filename)}</p>
+                                <p class="semantic-source"><strong>Subido:</strong> ${escapeSemanticHtml(uploadDate)}</p>
+                                <p id="${chunkId}" class="semantic-chunk-text ${needsToggle ? 'is-collapsed' : ''}">${escapeSemanticHtml(chunkText)}</p>
+                                ${needsToggle ? `<button type="button" class="semantic-toggle-btn" onclick="toggleSemanticChunk('${chunkId}', this)">Ver más</button>` : ''}
+                            </article>
+                        `;
+                    }).join('');
+                } catch (error) {
+                    messageContainer.innerHTML = `<div class="error-message">Error: ${escapeSemanticHtml(error.message)}</div>`;
+                    resultsContainer.innerHTML = '<p class="no-data">No hay resultados para mostrar.</p>';
+                } finally {
+                    searchBtn.disabled = false;
+                }
+            });
+        }
+
+        window.toggleSemanticChunk = function(chunkElementId, button) {
+            const chunkElement = document.getElementById(chunkElementId);
+
+            if (!chunkElement || !button) {
+                return;
+            }
+
+            const isCollapsed = chunkElement.classList.toggle('is-collapsed');
+            button.textContent = isCollapsed ? 'Ver más' : 'Ver menos';
+        };
 
         window.deleteDocument = async function(docId) {
             if (!confirm('¿Estás seguro de eliminar este documento?')) return;
