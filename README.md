@@ -19,6 +19,9 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Documentos globales y persistentes en la base de datos local SQLite.
 * Subir documentos (PDF, MD, DOCX, TXT) mediante drag & drop.
 * Sistema de versionado de documentos y visualización de diferencias (Diff) para documentos de texto/markdown.
+* Generación local de embeddings por chunk con metadatos asociados y persistencia en ChromaDB por curso.
+* Sincronización automática SQLite + ChromaDB al versionar o eliminar documentos (limpieza de chunks obsoletos).
+* Búsqueda en lenguaje natural con estrategia configurable por curso: `semantic`, `keyword (BM25)` o `hybrid`.
 * Descarga directa de archivos de las distintas versiones subidas.
 * Comentarios de Estudiantes que son visibles solo para profesor/admin.
 * Hash SHA256 para cada documento y cada subida.
@@ -26,23 +29,37 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Interfaz diferenciada por rol de usuario.
 * Confirmación antes de eliminar.
 * Interfaz moderna y responsiva.
+* Registro de métricas de recuperación por consulta (estrategia, Top-N, ids recuperados, scores y usuario).
 
 ## Estructura del Proyecto
 
 ```
 Knowledge Base Curator Agent/
-├── app.py                 # Servidor Flask con toda la lógica (Orquestador)
-├── requirements.txt       # Dependencias Python
-├── database.db           # Base de datos SQLite
+├── app.py                    # Servidor Flask con la lógica principal (orquestador)
+├── document_processing.py    # Extracción/chunking de texto por archivo
+├── embedding_processing.py   # Proveedores y payloads de embeddings
+├── vector_store.py           # Persistencia y consultas en ChromaDB
+├── requirements.txt          # Dependencias Python
+├── database.db               # Base de datos SQLite
+├── README.md                 # Documentación del proyecto
 ├── templates/
-│   ├── login.html        # Página de autenticación
-│   ├── signup.html       # Página de registro de usuarios
-│   ├── index.html        # Página de gestión de cursos
-│   └── upload.html       # Página de documentos y comentarios
+│   ├── login.html            # Página de autenticación
+│   ├── signup.html           # Página de registro de usuarios
+│   ├── index.html            # Página de gestión de cursos
+│   └── upload.html           # Página de documentos, comentarios y búsqueda semántica
 ├── static/
-│   └── style.css         # Estilos CSS
-├── run.bat               # Script de ejecución automática (Windows)
-└── run.ps1               # Script PowerShell alternativo
+│   └── style.css            # Estilos CSS
+├── tests/
+│   ├── run_issue_suite.py   # Suite integrada de validación (Issues 11-15)
+│   ├── test_issue_11.py
+│   ├── test_issue_12.py
+│   ├── test_issue_13.py
+│   ├── test_issue_14.py
+│   └── test_issue_15.py
+├── run.bat                  # Script de ejecución automática (Windows)
+├── run.ps1                  # Script PowerShell alternativo
+├── .chroma/                 # Persistencia local de ChromaDB
+└── venv_project/            # Entorno virtual local (opcional)
 ```
 
 ## Instalación y Ejecución
@@ -66,6 +83,8 @@ El script automáticamente va a instalr las dependencias, iniciar el servidor y 
 ```bash
 pip install -r requirements.txt
 ```
+
+   La primera ejecución que genere embeddings puede descargar el modelo local `sentence-transformers/all-MiniLM-L6-v2`.
 
 3. **Ejecutar la aplicación**
 ```bash
@@ -244,11 +263,100 @@ Cada comentario incluye:
 - `GET /api/comments/<document_id>` - Obtiene comentarios (admin/profesor)
 - `POST /api/add-comment` - Agrega un comentario (estudiante)
 
+### Consulta Semántica 
+- `POST /api/query` - Ejecuta búsqueda semántica por curso y devuelve Top-N resultados con:
+  - `chunk_text`
+  - `score`
+  - `source.filename`
+  - `source.upload_date`
+
+### Estrategia de Búsqueda por Curso
+- `PUT /api/course-search-strategy/<course_id>` - Actualiza estrategia de recuperación del curso: `semantic`, `keyword` o `hybrid`.
+
+### Métricas de Recuperación
+- `GET /api/retrieval-metrics` - Consulta métricas históricas de recuperación (admin/profesor).
+- Parámetros opcionales:
+  - `course_code`: filtra por curso
+  - `limit`: máximo de registros (tope 200)
+
+
+### Sincronización de Vector Store en Eliminación y Versionado
+
+- Al eliminar un documento (`DELETE /api/delete-document/<id>`), se eliminan también sus chunks en ChromaDB usando filtro por `doc_hash`.
+- Al subir una nueva versión (`POST /api/upload` con mismo nombre en el curso), se eliminan primero los chunks de la versión anterior antes de indexar los nuevos.
+- Si ocurre un error de vector store durante eliminación/versionado, SQLite hace rollback para mantener consistencia transaccional.
+
+### Búsqueda y Recuperación en Lenguaje Natural
+
+El endpoint `POST /api/query` soporta tres estrategias, definidas en `courses.search_strategy`:
+
+- `semantic`
+  - Usa embeddings del query con `all-MiniLM-L6-v2`.
+  - Consulta la colección Chroma del curso y ordena por similitud vectorial.
+
+Para `keyword` y `hybrid` se recuperan inicialmente candidatos pero no se muestra ni se despliega al usuario en la interfaz, se guarda solo para el proceso de ranking interno.
+
+- `keyword` (BM25)
+  - Recupera chunks candidatos del curso y los reordena con `BM25Okapi` (`rank_bm25`).
+  - Prioriza coincidencias léxicas de términos del query.
+
+- `hybrid`
+  - Combina ranking semántico y ranking BM25.
+  - Usa **Reciprocal Rank Fusion (RRF)** para fusionar listas.
+  - Fórmula usada: `RRF score = 1 / (k + rank)` con `k=60`.
+
+Notas de implementación:
+- La estrategia activa se consulta por curso antes de ejecutar la búsqueda.
+- Si la estrategia no es válida o está vacía, el sistema hace fallback a `semantic`.
+- La respuesta mantiene un formato unificado (`chunk_text`, `score`, `source`, `metadata`) para las tres estrategias.
+
+### Métricas de Recuperación
+
+Cada consulta a `POST /api/query` guarda una traza en la tabla `retrieval_metrics` para análisis posterior.
+
+Campos registrados por consulta:
+- `timestamp`
+- `course_name`
+- `course_code`
+- `query_text`
+- `search_strategy`
+- `top_n`
+- `returned_doc_ids` (lista serializada en JSON)
+- `scores` (lista serializada en JSON)
+- `user`
+
+Consulta de métricas:
+- Endpoint: `GET /api/retrieval-metrics`
+- Acceso: admin/profesor
+- Filtros soportados: `course_code`, `limit`
+- Respuesta: `{ total, metrics[] }`
+
+### Interfaz de Usuario (UI)
+
+- Se agregó una sección separada de "Consulta Semántica del Curso" para Admin, Profesor y Estudiante.
+- La UI incluye selector Top-N con valores fijos: `1`, `3`, `5`, `10`.
+- Cada resultado se muestra como tarjeta con:
+  - Chunk de texto
+  - Score de similitud
+  - Nombre del archivo
+  - Fecha de subida
+- Para chunks largos se incorporó interacción "Ver más / Ver menos".
+
+### Pruebas
+
+- Se añadieron pruebas de Issue 14 en `tests/test_issue_14.py` (sincronización y rollback).
+- Se añadieron pruebas de Issue 15 en `tests/test_issue_15.py` (respuesta, alcance por curso y validaciones).
+- Se validó estrategia de búsqueda por curso (`semantic`/`keyword`/`hybrid`) y el registro/consulta de métricas de recuperación.
+- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15 en conjunto.
+
 ## Stack
 
 - **Base de datos**: SQLite3 (local, no requiere servidor externo)
 - **Backend**: Flask 
+- **Embeddings**: sentence-transformers (modelo local `all-MiniLM-L6-v2`)
 - **Frontend**: HTML5, CSS3, JavaScript 
+- `CHROMA_PERSIST_DIR` permite cambiar la ruta de persistencia local; por defecto se usa `./.chroma` y esa carpeta queda ignorada por Git
+- **Vector Store**: ChromaDB persistente con una colección separada por curso
 - **Hashing**: SHA256
 - **Autenticación**: Sesiones de Flask
 - **Validación**: Extensiones de archivo, duplicados, límites de caracteres

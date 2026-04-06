@@ -426,6 +426,10 @@ __pycache__/
 
 # Base de datos
 *.db
+.chroma/
+
+# Archivos Temporales/Logs/Configuración
+.tmp_validation/
 *.chroma
 
 # Archivos tempprales
