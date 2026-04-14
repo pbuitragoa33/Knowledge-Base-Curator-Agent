@@ -362,6 +362,72 @@ def _ensure_courses_schema(con, cursor):
     con.execute("PRAGMA foreign_keys = ON")
 
 
+def get_db_connection():
+
+    """Crea una conexión SQLite con llaves foráneas habilitadas."""
+
+    con = sqlite3.connect(DATABASE)
+    con.execute("PRAGMA foreign_keys = ON")
+    return con
+
+
+def _create_agent_traceability_tables(cursor):
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_chat_history
+                 (id INTEGER PRIMARY KEY,
+                  course_id INTEGER NOT NULL,
+                  conversation_id TEXT NOT NULL,
+                  sender_type TEXT NOT NULL CHECK(sender_type IN ('profesor', 'agente')),
+                  sender_username TEXT,
+                  message_text TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  FOREIGN KEY(course_id) REFERENCES courses(id),
+                  CHECK(
+                      (sender_type = 'profesor' AND sender_username IS NOT NULL AND TRIM(sender_username) <> '')
+                      OR
+                      (sender_type = 'agente' AND sender_username IS NULL)
+                  ))''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_suggestions
+                 (id INTEGER PRIMARY KEY,
+                  course_id INTEGER NOT NULL,
+                  conversation_id TEXT,
+                  tipo TEXT NOT NULL CHECK(tipo IN ('redundancia', 'deactualizacion', 'conflicto')),
+                  input_context TEXT NOT NULL,
+                  razonamiento TEXT NOT NULL,
+                  evidencia_ids TEXT NOT NULL,
+                  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente', 'aprobado', 'rechazado')),
+                  created_at TEXT NOT NULL,
+                  reviewed_at TEXT,
+                  reviewed_by TEXT,
+                  FOREIGN KEY(course_id) REFERENCES courses(id),
+                  CHECK(
+                      (estado = 'pendiente' AND reviewed_at IS NULL AND reviewed_by IS NULL)
+                      OR
+                      (estado IN ('aprobado', 'rechazado') AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL AND TRIM(reviewed_by) <> '')
+                  ))''')
+
+
+def _create_agent_traceability_indexes(cursor):
+
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_conversation_created_at
+           ON agent_chat_history(course_id, conversation_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_created_at
+           ON agent_chat_history(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_created_at
+           ON agent_suggestions(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_estado_created_at
+           ON agent_suggestions(course_id, estado, created_at)'''
+    )
+
+
 # --------------------------------------------------
 # Acciones relacinadas a la Base de Datos (SQLite3)
 # --------------------------------------------------
@@ -373,7 +439,7 @@ def _ensure_courses_schema(con, cursor):
 
 def init_db():
 
-    con = sqlite3.connect(DATABASE)
+    con = get_db_connection()
     c = con.cursor()
 
     # Tabla de Usuario
@@ -513,11 +579,277 @@ def init_db():
               scores TEXT NOT NULL,
               user TEXT NOT NULL)''')
 
+    _create_agent_traceability_tables(c)
+    _create_agent_traceability_indexes(c)
+
     con.commit()
     con.close()
 
 
 init_db()
+
+
+def _serialize_evidence_ids(evidence_ids):
+
+    """Serializa ids de evidencia para almacenamiento en SQLite."""
+
+    if evidence_ids is None:
+
+        evidence_ids = []
+
+    return json.dumps([str(evidence_id) for evidence_id in evidence_ids])
+
+
+def _deserialize_evidence_ids(raw_value):
+
+    """Convierte el campo serializado de evidencia a una lista Python."""
+
+    if not raw_value:
+
+        return []
+
+    try:
+
+        decoded = json.loads(raw_value)
+
+    except (TypeError, ValueError):
+
+        return []
+
+    if not isinstance(decoded, list):
+
+        return []
+
+    return [str(item) for item in decoded]
+
+
+def save_agent_chat_message(course_id, conversation_id, sender_type, message_text, sender_username = None):
+
+    """Guarda un mensaje de trazabilidad entre profesor y agente."""
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_sender_username = sender_username.strip() if isinstance(sender_username, str) else None
+    normalized_conversation_id = str(conversation_id or '').strip()
+    normalized_message_text = str(message_text or '').strip()
+    normalized_sender_type = str(sender_type or '').strip()
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''INSERT INTO agent_chat_history
+               (course_id, conversation_id, sender_type, sender_username, message_text, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (
+                int(course_id),
+                normalized_conversation_id,
+                normalized_sender_type,
+                normalized_sender_username,
+                normalized_message_text,
+                created_at,
+            )
+        )
+        con.commit()
+        return c.lastrowid
+
+    finally:
+
+        con.close()
+
+
+def save_agent_suggestion(
+    course_id,
+    tipo,
+    input_context,
+    razonamiento,
+    evidencia_ids,
+    estado = 'pendiente',
+    conversation_id = None,
+    reviewed_by = None,
+):
+
+    """Guarda una sugerencia generada por el agente para auditoría futura."""
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_estado = str(estado or 'pendiente').strip()
+    normalized_reviewed_by = reviewed_by.strip() if isinstance(reviewed_by, str) else None
+    normalized_reviewed_at = created_at if normalized_estado in ('aprobado', 'rechazado') and normalized_reviewed_by else None
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''INSERT INTO agent_suggestions
+               (course_id, conversation_id, tipo, input_context, razonamiento,
+                evidencia_ids, estado, created_at, reviewed_at, reviewed_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (
+                int(course_id),
+                str(conversation_id or '').strip() or None,
+                str(tipo or '').strip(),
+                str(input_context or '').strip(),
+                str(razonamiento or '').strip(),
+                _serialize_evidence_ids(evidencia_ids),
+                normalized_estado,
+                created_at,
+                normalized_reviewed_at,
+                normalized_reviewed_by,
+            )
+        )
+        con.commit()
+        return c.lastrowid
+
+    finally:
+
+        con.close()
+
+
+def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
+
+    """Lista mensajes del historial del agente para un curso."""
+
+    normalized_limit = max(1, int(limit))
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        if conversation_id:
+
+            c.execute(
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                   FROM agent_chat_history
+                   WHERE course_id = ? AND conversation_id = ?
+                   ORDER BY created_at ASC, id ASC
+                   LIMIT ?''',
+                (int(course_id), str(conversation_id).strip(), normalized_limit)
+            )
+
+        else:
+
+            c.execute(
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                   FROM agent_chat_history
+                   WHERE course_id = ?
+                   ORDER BY created_at ASC, id ASC
+                   LIMIT ?''',
+                (int(course_id), normalized_limit)
+            )
+
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    history = []
+
+    for row in rows:
+
+        history.append({
+            'id': row[0],
+            'course_id': row[1],
+            'conversation_id': row[2],
+            'sender_type': row[3],
+            'sender_username': row[4],
+            'message_text': row[5],
+            'created_at': row[6],
+        })
+
+    return history
+
+
+def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
+
+    """Lista sugerencias de un curso con filtros opcionales."""
+
+    normalized_limit = max(1, int(limit))
+    where_clauses = ['course_id = ?']
+    parameters = [int(course_id)]
+
+    if estado:
+
+        where_clauses.append('estado = ?')
+        parameters.append(str(estado).strip())
+
+    if tipo:
+
+        where_clauses.append('tipo = ?')
+        parameters.append(str(tipo).strip())
+
+    parameters.append(normalized_limit)
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            f'''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                       evidencia_ids, estado, created_at, reviewed_at, reviewed_by
+                FROM agent_suggestions
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?'''
+            ,
+            tuple(parameters)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    suggestions = []
+
+    for row in rows:
+
+        suggestions.append({
+            'id': row[0],
+            'course_id': row[1],
+            'conversation_id': row[2],
+            'tipo': row[3],
+            'input_context': row[4],
+            'razonamiento': row[5],
+            'evidencia_ids': _deserialize_evidence_ids(row[6]),
+            'estado': row[7],
+            'created_at': row[8],
+            'reviewed_at': row[9],
+            'reviewed_by': row[10],
+        })
+
+    return suggestions
+
+
+def update_agent_suggestion_status(suggestion_id, estado, reviewed_by):
+
+    """Actualiza el estado final de una sugerencia revisada por una persona."""
+
+    reviewed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_reviewed_by = reviewed_by.strip() if isinstance(reviewed_by, str) else None
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''UPDATE agent_suggestions
+               SET estado = ?, reviewed_at = ?, reviewed_by = ?
+               WHERE id = ?''',
+            (
+                str(estado or '').strip(),
+                reviewed_at,
+                normalized_reviewed_by,
+                int(suggestion_id),
+            )
+        )
+        con.commit()
+        return c.rowcount > 0
+
+    finally:
+
+        con.close()
 
 
 # ---------------------------------

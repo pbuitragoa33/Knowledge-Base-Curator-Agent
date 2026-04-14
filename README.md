@@ -42,6 +42,9 @@ Knowledge Base Curator Agent/
 ├── requirements.txt          # Dependencias Python
 ├── database.db               # Base de datos SQLite
 ├── README.md                 # Documentación del proyecto
+├── sql/
+│   ├── 001_agent_traceability_schema.sql      # DDL de trazabilidad del agente
+│   └── 002_agent_traceability_operations.sql  # Operaciones SQL de referencia
 ├── templates/
 │   ├── login.html            # Página de autenticación
 │   ├── signup.html           # Página de registro de usuarios
@@ -50,12 +53,13 @@ Knowledge Base Curator Agent/
 ├── static/
 │   └── style.css            # Estilos CSS
 ├── tests/
-│   ├── run_issue_suite.py   # Suite integrada de validación (Issues 11-15)
+│   ├── run_issue_suite.py   # Suite integrada de validación (Issues 11-15 y 19)
 │   ├── test_issue_11.py
 │   ├── test_issue_12.py
 │   ├── test_issue_13.py
 │   ├── test_issue_14.py
-│   └── test_issue_15.py
+│   ├── test_issue_15.py
+│   └── test_issue_19.py
 ├── run.bat                  # Script de ejecución automática (Windows)
 ├── run.ps1                  # Script PowerShell alternativo
 ├── .chroma/                 # Persistencia local de ChromaDB
@@ -195,6 +199,24 @@ Cada comentario incluye:
 - No dependen de la sesión del usuario
 - Disponibles para todos los usuarios del curso
 - Solo eliminables por Profesor/Admin
+
+### Trazabilidad del Agente
+
+Se agregaron dos tablas para soportar auditoría y seguimiento Human-in-the-Loop:
+
+- `agent_chat_history`
+  - Registra mensajes entre profesor y agente por `course_id` y `conversation_id`.
+  - `sender_type` solo permite `profesor` o `agente`.
+  - `sender_username` es obligatorio para mensajes del profesor y debe quedar en `NULL` para mensajes del agente.
+
+- `agent_suggestions`
+  - Registra sugerencias asociadas al curso mediante `course_id`.
+  - `tipo` solo permite `redundancia`, `deactualizacion` o `conflicto`.
+  - `estado` solo permite `pendiente`, `aprobado` o `rechazado`.
+  - `evidencia_ids` se guarda como un arreglo JSON serializado con ids de chunks relacionados.
+  - `razonamiento` almacena una justificación explicable para revisión humana, no reasoning oculto del modelo.
+
+Los scripts SQL equivalentes se encuentran en `sql/001_agent_traceability_schema.sql` y `sql/002_agent_traceability_operations.sql`.
 
 ## Formatos de Archivo Soportados
 
@@ -344,10 +366,11 @@ Consulta de métricas:
 
 ### Pruebas
 
+- Se añadieron pruebas de Issue 19 en `tests/test_issue_19.py` para validar esquema, helpers, constraints y script SQL.
 - Se añadieron pruebas de Issue 14 en `tests/test_issue_14.py` (sincronización y rollback).
 - Se añadieron pruebas de Issue 15 en `tests/test_issue_15.py` (respuesta, alcance por curso y validaciones).
 - Se validó estrategia de búsqueda por curso (`semantic`/`keyword`/`hybrid`) y el registro/consulta de métricas de recuperación.
-- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15 en conjunto.
+- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15 y 19 en conjunto.
 
 ## Stack
 
