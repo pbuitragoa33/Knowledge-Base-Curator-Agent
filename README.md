@@ -36,10 +36,12 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 ```
 Knowledge Base Curator Agent/
 ├── app.py                    # Servidor Flask con la lógica principal (orquestador)
+├── agent_workflow.py         # Workflow base de LangGraph con OpenAI
 ├── document_processing.py    # Extracción/chunking de texto por archivo
 ├── embedding_processing.py   # Proveedores y payloads de embeddings
 ├── vector_store.py           # Persistencia y consultas en ChromaDB
 ├── requirements.txt          # Dependencias Python
+├── .env.example              # Variables de entorno de ejemplo para LLM
 ├── database.db               # Base de datos SQLite
 ├── README.md                 # Documentación del proyecto
 ├── sql/
@@ -55,14 +57,15 @@ Knowledge Base Curator Agent/
 ├── static/
 │   └── style.css            # Estilos CSS
 ├── tests/
-│   ├── run_issue_suite.py   # Suite integrada de validación (Issues 11-15 y 19)
+│   ├── run_issue_suite.py   # Suite integrada de validación (Issues 11-15, 19, 20 y 21)
 │   ├── test_issue_11.py
 │   ├── test_issue_12.py
 │   ├── test_issue_13.py
 │   ├── test_issue_14.py
 │   ├── test_issue_15.py
 │   ├── test_issue_19.py
-│   └── test_issue_20.py
+│   ├── test_issue_20.py
+│   └── test_issue_21.py
 ├── run.bat                  # Script de ejecución automática (Windows)
 ├── run.ps1                  # Script PowerShell alternativo
 ├── .chroma/                 # Persistencia local de ChromaDB
@@ -233,6 +236,17 @@ Se agrego la tabla `agent_prompts` para versionar prompts sin dejarlos hardcodea
 
 Los scripts asociados se encuentran en `sql/003_agent_prompts_schema.sql` y `sql/004_agent_prompts_seed.sql`.
 
+### Workflow Base del Agente
+
+Se agrego `agent_workflow.py` como base de integracion con LangGraph y OpenAI:
+
+- Usa `OPENAI_API_KEY` y `OPENAI_MODEL` desde variables de entorno.
+- Toma el prompt activo `chat` desde `agent_prompts` mediante `get_active_prompt('chat')`.
+- Define `AgentState` con `messages`, `course_id`, `extracted_context` y `suggestions`.
+- Expone `run_agent_once(...)` para ejecutar un turno minimo en memoria sin persistir todavia el resultado.
+
+La configuracion local esperada queda documentada en `.env.example`. Issue 45 usa OpenAI unicamente; Gemini queda fuera del alcance actual.
+
 ## Formatos de Archivo Soportados
 
 - **PDF** (.pdf)
@@ -381,12 +395,13 @@ Consulta de métricas:
 
 ### Pruebas
 
+- Se añadieron pruebas de Issue 21 en `tests/test_issue_21.py` para validar `agent_workflow.py`, el cliente OpenAI y el workflow base de LangGraph.
 - Se añadieron pruebas de Issue 20 en `tests/test_issue_20.py` para validar esquema, seed, helpers y scripts SQL del catalogo de prompts.
 - Se añadieron pruebas de Issue 19 en `tests/test_issue_19.py` para validar esquema, helpers, constraints y script SQL.
 - Se añadieron pruebas de Issue 14 en `tests/test_issue_14.py` (sincronización y rollback).
 - Se añadieron pruebas de Issue 15 en `tests/test_issue_15.py` (respuesta, alcance por curso y validaciones).
 - Se validó estrategia de búsqueda por curso (`semantic`/`keyword`/`hybrid`) y el registro/consulta de métricas de recuperación.
-- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15, 19 y 20 en conjunto.
+- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15, 19, 20 y 21 en conjunto.
 
 ## Stack
 
