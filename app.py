@@ -78,6 +78,24 @@ EMBEDDING_DEVICE = os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE)
 EMBEDDING_DIMENSION = DEFAULT_EMBEDDING_DIMENSION
 QUERY_TOP_N_DEFAULT = _read_positive_int_env('QUERY_TOP_N_DEFAULT', 5)
 QUERY_TOP_N_MAX = _read_positive_int_env('QUERY_TOP_N_MAX', 20)
+PROMPT_TYPES = ('analisis', 'chat', 'formateo')
+DEFAULT_AGENT_PROMPTS = {
+    'analisis': (
+        'Eres un analista de curaduria academica. Revisa el material del curso {{course_name}} '
+        'usando solo {{contexto_recuperado}}. Detecta redundancia, deactualizacion y conflictos. '
+        'Si la evidencia es insuficiente, dilo explicitamente. No inventes fuentes ni hechos.'
+    ),
+    'chat': (
+        'Eres un asistente de curaduria para docentes del curso {{course_name}}. Responde en '
+        'espanol usando {{historial_chat}} y {{contexto_recuperado}}. Prioriza claridad, '
+        'trazabilidad y evidencia disponible. Diferencia hechos observados de sugerencias.'
+    ),
+    'formateo': (
+        'Transforma {{hallazgos}} en sugerencias listas para revision humana. Para cada '
+        'sugerencia entrega exactamente: tipo, input_context, razonamiento y evidencia_ids. '
+        'No agregues campos extra y no inventes evidencia.'
+    ),
+}
 CHUNK_REGISTRY = {}
 UPLOAD_CHUNK_INDEX = {}
 EMBEDDING_REGISTRY = {}
@@ -371,6 +389,13 @@ def get_db_connection():
     return con
 
 
+def _normalize_prompt_type(tipo_prompt):
+
+    """Normaliza el tipo de prompt para consultas internas."""
+
+    return str(tipo_prompt or '').strip().lower()
+
+
 def _create_agent_traceability_tables(cursor):
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS agent_chat_history
@@ -408,6 +433,17 @@ def _create_agent_traceability_tables(cursor):
                   ))''')
 
 
+def _create_agent_prompts_table(cursor):
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_prompts
+                 (id INTEGER PRIMARY KEY,
+                  tipo_prompt TEXT NOT NULL CHECK(tipo_prompt IN ('analisis', 'chat', 'formateo')),
+                  version INTEGER NOT NULL CHECK(version > 0),
+                  prompt_text TEXT NOT NULL CHECK(TRIM(prompt_text) <> ''),
+                  is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0, 1)),
+                  fecha_creacion TEXT NOT NULL)''')
+
+
 def _create_agent_traceability_indexes(cursor):
 
     cursor.execute(
@@ -426,6 +462,61 @@ def _create_agent_traceability_indexes(cursor):
         '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_estado_created_at
            ON agent_suggestions(course_id, estado, created_at)'''
     )
+
+
+def _create_agent_prompt_indexes(cursor):
+
+    cursor.execute(
+        '''CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_tipo_version
+           ON agent_prompts(tipo_prompt, version)'''
+    )
+    cursor.execute(
+        '''CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_single_active_per_type
+           ON agent_prompts(tipo_prompt)
+           WHERE is_active = 1'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_prompts_tipo_active
+           ON agent_prompts(tipo_prompt, is_active)'''
+    )
+
+
+def _seed_agent_prompts(cursor):
+
+    """Inserta prompts base sin sobrescribir datos existentes."""
+
+    for tipo_prompt, prompt_text in DEFAULT_AGENT_PROMPTS.items():
+
+        cursor.execute(
+            '''SELECT 1 FROM agent_prompts
+               WHERE tipo_prompt = ? AND version = 1''',
+            (tipo_prompt,)
+        )
+
+        if cursor.fetchone():
+
+            continue
+
+        cursor.execute(
+            '''SELECT 1 FROM agent_prompts
+               WHERE tipo_prompt = ? AND is_active = 1''',
+            (tipo_prompt,)
+        )
+        has_active_version = cursor.fetchone() is not None
+        created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.execute(
+            '''INSERT INTO agent_prompts
+               (tipo_prompt, version, prompt_text, is_active, fecha_creacion)
+               VALUES (?, ?, ?, ?, ?)''',
+            (
+                tipo_prompt,
+                1,
+                prompt_text,
+                0 if has_active_version else 1,
+                created_at,
+            )
+        )
 
 
 # --------------------------------------------------
@@ -581,12 +672,32 @@ def init_db():
 
     _create_agent_traceability_tables(c)
     _create_agent_traceability_indexes(c)
+    _create_agent_prompts_table(c)
+    _create_agent_prompt_indexes(c)
+    _seed_agent_prompts(c)
 
     con.commit()
     con.close()
 
 
 init_db()
+
+
+def seed_agent_prompts():
+
+    """Ejecuta la siembra idempotente de prompts base."""
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        _seed_agent_prompts(c)
+        con.commit()
+
+    finally:
+
+        con.close()
 
 
 def _serialize_evidence_ids(evidence_ids):
@@ -843,6 +954,181 @@ def update_agent_suggestion_status(suggestion_id, estado, reviewed_by):
                 normalized_reviewed_by,
                 int(suggestion_id),
             )
+        )
+        con.commit()
+        return c.rowcount > 0
+
+    finally:
+
+        con.close()
+
+
+def get_active_prompt(tipo_prompt):
+
+    """Retorna el prompt activo para un tipo dado, si existe."""
+
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+
+    if not normalized_tipo_prompt:
+
+        return None
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT prompt_text
+               FROM agent_prompts
+               WHERE tipo_prompt = ? AND is_active = 1
+               ORDER BY version DESC
+               LIMIT 1''',
+            (normalized_tipo_prompt,)
+        )
+        row = c.fetchone()
+
+    finally:
+
+        con.close()
+
+    return row[0] if row else None
+
+
+def list_agent_prompts(tipo_prompt = None, include_inactive = True):
+
+    """Lista versiones de prompts para soporte interno y pruebas."""
+
+    where_clauses = []
+    parameters = []
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+
+    if normalized_tipo_prompt:
+
+        where_clauses.append('tipo_prompt = ?')
+        parameters.append(normalized_tipo_prompt)
+
+    if not include_inactive:
+
+        where_clauses.append('is_active = 1')
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            f'''SELECT id, tipo_prompt, version, prompt_text, is_active, fecha_creacion
+                FROM agent_prompts
+                {where_sql}
+                ORDER BY tipo_prompt ASC, version DESC, id DESC''',
+            tuple(parameters)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    prompts = []
+
+    for row in rows:
+
+        prompts.append({
+            'id': row[0],
+            'tipo_prompt': row[1],
+            'version': row[2],
+            'prompt_text': row[3],
+            'is_active': bool(row[4]),
+            'fecha_creacion': row[5],
+        })
+
+    return prompts
+
+
+def create_agent_prompt_version(tipo_prompt, prompt_text, is_active = False):
+
+    """Crea una nueva version de prompt dentro de su familia."""
+
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+    normalized_prompt_text = str(prompt_text or '').strip()
+    normalized_is_active = bool(is_active)
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT COALESCE(MAX(version), 0)
+               FROM agent_prompts
+               WHERE tipo_prompt = ?''',
+            (normalized_tipo_prompt,)
+        )
+        next_version = int(c.fetchone()[0]) + 1
+
+        if normalized_is_active:
+
+            c.execute(
+                '''UPDATE agent_prompts
+                   SET is_active = 0
+                   WHERE tipo_prompt = ?''',
+                (normalized_tipo_prompt,)
+            )
+
+        c.execute(
+            '''INSERT INTO agent_prompts
+               (tipo_prompt, version, prompt_text, is_active, fecha_creacion)
+               VALUES (?, ?, ?, ?, ?)''',
+            (
+                normalized_tipo_prompt,
+                next_version,
+                normalized_prompt_text,
+                1 if normalized_is_active else 0,
+                created_at,
+            )
+        )
+        con.commit()
+        return c.lastrowid
+
+    finally:
+
+        con.close()
+
+
+def activate_agent_prompt_version(tipo_prompt, version):
+
+    """Activa una version existente y desactiva las demas del mismo tipo."""
+
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT 1
+               FROM agent_prompts
+               WHERE tipo_prompt = ? AND version = ?''',
+            (normalized_tipo_prompt, int(version))
+        )
+
+        if c.fetchone() is None:
+
+            return False
+
+        c.execute(
+            '''UPDATE agent_prompts
+               SET is_active = 0
+               WHERE tipo_prompt = ?''',
+            (normalized_tipo_prompt,)
+        )
+        c.execute(
+            '''UPDATE agent_prompts
+               SET is_active = 1
+               WHERE tipo_prompt = ? AND version = ?''',
+            (normalized_tipo_prompt, int(version))
         )
         con.commit()
         return c.rowcount > 0

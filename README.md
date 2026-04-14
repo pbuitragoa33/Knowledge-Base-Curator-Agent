@@ -44,7 +44,9 @@ Knowledge Base Curator Agent/
 ├── README.md                 # Documentación del proyecto
 ├── sql/
 │   ├── 001_agent_traceability_schema.sql      # DDL de trazabilidad del agente
-│   └── 002_agent_traceability_operations.sql  # Operaciones SQL de referencia
+│   ├── 002_agent_traceability_operations.sql  # Operaciones SQL de referencia
+│   ├── 003_agent_prompts_schema.sql           # DDL del catalogo dinamico de prompts
+│   └── 004_agent_prompts_seed.sql             # Seed inicial de prompts del agente
 ├── templates/
 │   ├── login.html            # Página de autenticación
 │   ├── signup.html           # Página de registro de usuarios
@@ -59,7 +61,8 @@ Knowledge Base Curator Agent/
 │   ├── test_issue_13.py
 │   ├── test_issue_14.py
 │   ├── test_issue_15.py
-│   └── test_issue_19.py
+│   ├── test_issue_19.py
+│   └── test_issue_20.py
 ├── run.bat                  # Script de ejecución automática (Windows)
 ├── run.ps1                  # Script PowerShell alternativo
 ├── .chroma/                 # Persistencia local de ChromaDB
@@ -218,6 +221,18 @@ Se agregaron dos tablas para soportar auditoría y seguimiento Human-in-the-Loop
 
 Los scripts SQL equivalentes se encuentran en `sql/001_agent_traceability_schema.sql` y `sql/002_agent_traceability_operations.sql`.
 
+### Catalogo de Prompts del Agente
+
+Se agrego la tabla `agent_prompts` para versionar prompts sin dejarlos hardcodeados:
+
+- `tipo_prompt` solo permite `analisis`, `chat` y `formateo`.
+- `version` usa enteros incrementales por tipo de prompt.
+- `is_active` indica cual version debe usarse en runtime para cada familia.
+- `prompt_text` almacena el contenido completo del prompt.
+- La funcion interna `get_active_prompt(tipo_prompt)` retorna el texto activo para futuras integraciones con LangGraph.
+
+Los scripts asociados se encuentran en `sql/003_agent_prompts_schema.sql` y `sql/004_agent_prompts_seed.sql`.
+
 ## Formatos de Archivo Soportados
 
 - **PDF** (.pdf)
@@ -366,11 +381,12 @@ Consulta de métricas:
 
 ### Pruebas
 
+- Se añadieron pruebas de Issue 20 en `tests/test_issue_20.py` para validar esquema, seed, helpers y scripts SQL del catalogo de prompts.
 - Se añadieron pruebas de Issue 19 en `tests/test_issue_19.py` para validar esquema, helpers, constraints y script SQL.
 - Se añadieron pruebas de Issue 14 en `tests/test_issue_14.py` (sincronización y rollback).
 - Se añadieron pruebas de Issue 15 en `tests/test_issue_15.py` (respuesta, alcance por curso y validaciones).
 - Se validó estrategia de búsqueda por curso (`semantic`/`keyword`/`hybrid`) y el registro/consulta de métricas de recuperación.
-- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15 y 19 en conjunto.
+- Se consolidó la ejecución en `tests/run_issue_suite.py` para validar Issues 11-15, 19 y 20 en conjunto.
 
 ## Stack
 
