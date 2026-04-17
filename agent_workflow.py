@@ -12,7 +12,13 @@ from langgraph.graph.state import CompiledStateGraph
 from typing_extensions import Annotated
 
 from app import get_active_prompt, get_db_connection
-
+from observability import (
+    log_node_input,
+    log_node_output,
+    log_prompt,
+    log_llm_response,
+    log_agent_error,
+)
 
 load_dotenv()
 
@@ -101,17 +107,37 @@ def _render_chat_prompt(state: AgentState) -> str:
 
 
 def _llm_call(state: AgentState) -> dict[str, object]:
-    """Execute the minimal one-node agent turn."""
+    """Execute the minimal one-node agent turn with full observability logging."""
 
-    rendered_prompt = _render_chat_prompt(state)
-    llm = get_agent_llm()
-    input_messages = [SystemMessage(content=rendered_prompt)] + list(state.get("messages", []))
-    ai_response = llm.invoke(input_messages)
+    # Registrar entrada al nodo
+    log_node_input("llm_call", state)
 
-    return {
-        "messages": [ai_response],
-        "suggestions": list(state.get("suggestions", [])),
-    }
+    try:
+        rendered_prompt = _render_chat_prompt(state)
+
+        # Registrar prompt enviado al LLM
+        log_prompt("llm_call", rendered_prompt)
+
+        llm = get_agent_llm()
+        input_messages = [SystemMessage(content=rendered_prompt)] + list(state.get("messages", []))
+        ai_response = llm.invoke(input_messages)
+
+        # Registrar respuesta cruda del LLM
+        log_llm_response("llm_call", ai_response)
+
+        result = {
+            "messages": [ai_response],
+            "suggestions": list(state.get("suggestions", [])),
+        }
+
+        # Registrar salida del nodo
+        log_node_output("llm_call", result)
+
+        return result
+
+    except Exception as e:
+        log_agent_error("llm_call", e)
+        raise
 
 
 def build_agent_workflow() -> CompiledStateGraph:
