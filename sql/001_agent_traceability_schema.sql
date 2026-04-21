@@ -30,11 +30,19 @@ CREATE TABLE IF NOT EXISTS agent_suggestions
     created_at TEXT NOT NULL,
     reviewed_at TEXT,
     reviewed_by TEXT,
+    feedback_text TEXT,
+    score_manual INTEGER,
     FOREIGN KEY(course_id) REFERENCES courses(id),
     CHECK(
-        (estado = 'pendiente' AND reviewed_at IS NULL AND reviewed_by IS NULL)
+        (estado = 'pendiente' AND reviewed_at IS NULL AND reviewed_by IS NULL AND score_manual IS NULL)
         OR
-        (estado IN ('aprobado', 'rechazado') AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL AND TRIM(reviewed_by) <> '')
+        (
+            estado IN ('aprobado', 'rechazado')
+            AND reviewed_at IS NOT NULL
+            AND reviewed_by IS NOT NULL
+            AND TRIM(reviewed_by) <> ''
+            AND score_manual BETWEEN 1 AND 5
+        )
     )
 );
 
