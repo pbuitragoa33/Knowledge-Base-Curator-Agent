@@ -22,10 +22,10 @@ LIMIT :limit;
 -- Insertar una sugerencia del agente
 INSERT INTO agent_suggestions
     (course_id, conversation_id, tipo, input_context, razonamiento,
-     evidencia_ids, estado, created_at, reviewed_at, reviewed_by)
+    evidencia_ids, estado, created_at, reviewed_at, reviewed_by, feedback_text, score_manual)
 VALUES
     (:course_id, :conversation_id, :tipo, :input_context, :razonamiento,
-     :evidencia_ids, :estado, :created_at, :reviewed_at, :reviewed_by);
+    :evidencia_ids, :estado, :created_at, :reviewed_at, :reviewed_by, :feedback_text, :score_manual);
 
 -- Listar sugerencias de un curso con filtros opcionales
 SELECT
@@ -39,7 +39,9 @@ SELECT
     estado,
     created_at,
     reviewed_at,
-    reviewed_by
+        reviewed_by,
+        feedback_text,
+        score_manual
 FROM agent_suggestions
 WHERE course_id = :course_id
   AND (:estado IS NULL OR estado = :estado)
@@ -51,5 +53,7 @@ LIMIT :limit;
 UPDATE agent_suggestions
 SET estado = :estado,
     reviewed_at = :reviewed_at,
-    reviewed_by = :reviewed_by
+    reviewed_by = :reviewed_by,
+    feedback_text = :feedback_text,
+    score_manual = :score_manual
 WHERE id = :suggestion_id;
