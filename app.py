@@ -3171,6 +3171,26 @@ def review_page(course):
     return render_template('review.html', course=course, course_id=course_id)
 
 
+# HITL Dashboard - Página de chat con el agente
+
+@app.route('/chat/<course>')
+@admin_required
+def chat_page(course):
+    """Renderiza la interfaz de chat con el agente de curaduría."""
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute('SELECT id FROM courses WHERE name = ?', (course,))
+    result = c.fetchone()
+    con.close()
+
+    if not result:
+        return redirect(url_for('index'))
+
+    course_id = result[0]
+    return render_template('chat.html', course=course, course_id=course_id)
+
+
 # HITL Dashboard - Sugerencias del Agente
 
 @app.route('/api/agent/suggestions', methods=['GET'])
@@ -3308,7 +3328,8 @@ def agent_chat():
     from agent_tools import AGENT_TOOLS, get_llm_with_tools
 
     system_prompt = (
-        'Eres un asistente académico especializado en los documentos del curso. '
+        f'Eres un asistente académico especializado en los documentos del curso (course_id={course_id}). '
+        f'Cuando necesites información de los documentos, usa search_course_documents con course_id={course_id}. '
         'Responde únicamente preguntas relacionadas con el contenido de los documentos disponibles. '
         'Si una pregunta no tiene relación con los materiales del curso, indícalo con cortesía '
         'y pide al usuario que reformule su consulta. Responde siempre en español.'
