@@ -3151,6 +3151,47 @@ def get_retrieval_metrics():
 
     return jsonify({'total': len(metrics), 'metrics': metrics}), 200
 
+# HITL Dashboard - Sugerencias del Agente
+
+@app.route('/api/agent/suggestions', methods=['GET'])
+@admin_required
+def get_agent_suggestions():
+    """Lista sugerencias pendientes del agente para un curso."""
+
+    course_id = request.args.get('course_id', '').strip()
+
+    if not course_id:
+        return jsonify({'error': 'El parámetro course_id es requerido'}), 400
+
+    try:
+        course_id_int = int(course_id)
+    except ValueError:
+        return jsonify({'error': 'course_id debe ser un número entero'}), 400
+
+    suggestions = list_agent_suggestions(course_id_int, estado='pendiente')
+    return jsonify(suggestions), 200
+
+
+@app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
+@admin_required
+def resolve_agent_suggestion(suggestion_id):
+    """Aprueba o rechaza una sugerencia del agente."""
+
+    data = request.get_json(silent=True) or {}
+    estado = str(data.get('estado', '')).strip()
+
+    if estado not in ('aprobado', 'rechazado'):
+        return jsonify({'error': "El campo 'estado' debe ser 'aprobado' o 'rechazado'"}), 400
+
+    reviewed_by = session['user']
+    updated = update_agent_suggestion_status(suggestion_id, estado, reviewed_by)
+
+    if not updated:
+        return jsonify({'error': 'Sugerencia no encontrada'}), 404
+
+    return jsonify({'message': f'Sugerencia {suggestion_id} marcada como {estado}'}), 200
+
+
 if __name__ == '__main__':
 
     app.run(debug = True, host = 'localhost', port = 5000)
