@@ -3212,6 +3212,171 @@ def resolve_agent_suggestion(suggestion_id):
     return jsonify({'message': f'Sugerencia {suggestion_id} marcada como {estado}'}), 200
 
 
+# ── Proveedor de embeddings reutilizable para el endpoint de chat ──────────
+
+_AGENT_CHAT_EMBEDDING_PROVIDER = None
+
+
+def _get_agent_chat_embedding_provider():
+    """Inicializa y reutiliza el proveedor de embeddings para el chat del agente."""
+
+    global _AGENT_CHAT_EMBEDDING_PROVIDER
+
+    if _AGENT_CHAT_EMBEDDING_PROVIDER is None:
+        _AGENT_CHAT_EMBEDDING_PROVIDER = LocalSentenceTransformerProvider(
+            model_name=os.environ.get('EMBEDDING_MODEL_NAME', DEFAULT_EMBEDDING_MODEL_NAME),
+            batch_size=int(os.environ.get('EMBEDDING_BATCH_SIZE', DEFAULT_EMBEDDING_BATCH_SIZE)),
+            device=os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE),
+            embedding_dimension=DEFAULT_EMBEDDING_DIMENSION,
+        )
+
+    return _AGENT_CHAT_EMBEDDING_PROVIDER
+
+
+_AGENT_CHAT_SIMILARITY_THRESHOLD = 0.3
+
+
+@app.route('/api/agent/chat', methods=['POST'])
+@admin_required
+def agent_chat():
+    """Chat con el agente de curaduría académica sobre los documentos del curso."""
+
+    data = request.get_json(silent=True) or {}
+    message = str(data.get('message', '') or '').strip()
+    course_id_raw = data.get('course_id')
+    conversation_id = str(data.get('conversation_id', '') or '').strip()
+
+    if not message:
+        return jsonify({'error': "El campo 'message' es requerido"}), 400
+    if course_id_raw is None:
+        return jsonify({'error': "El campo 'course_id' es requerido"}), 400
+    if not conversation_id:
+        return jsonify({'error': "El campo 'conversation_id' es requerido"}), 400
+
+    try:
+        course_id = int(course_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "'course_id' debe ser un número entero"}), 400
+
+    # Resolver course_code desde la BD
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute('SELECT course_code FROM courses WHERE id = ?', (course_id,))
+    row = c.fetchone()
+    con.close()
+
+    if not row:
+        return jsonify({'error': 'Curso no encontrado'}), 404
+
+    course_code = row[0]
+
+    # Guardar mensaje del profesor
+    save_agent_chat_message(
+        course_id,
+        conversation_id,
+        'profesor',
+        message,
+        session['user'],
+    )
+
+    # ── Umbral de similitud vectorial ──────────────────────────────────────
+    try:
+        provider = _get_agent_chat_embedding_provider()
+        query_embedding = provider.embed_texts([message])[0]
+        threshold_results = query_course_embeddings(course_code, query_embedding, top_n=5)
+    except (EmbeddingGenerationError, VectorStoreError) as e:
+        return jsonify({'error': f'Error al procesar el mensaje: {str(e)}'}), 500
+
+    max_score = max((r['score'] for r in threshold_results), default=0.0)
+
+    if max_score < _AGENT_CHAT_SIMILARITY_THRESHOLD:
+        off_topic_msg = (
+            'Lo siento, tu pregunta no parece estar relacionada con los documentos del curso. '
+            'Por favor, reformúlala o consulta sobre los temas cubiertos en los materiales disponibles.'
+        )
+        save_agent_chat_message(course_id, conversation_id, 'agente', off_topic_msg)
+        return jsonify({
+            'response': off_topic_msg,
+            'sources': [],
+            'conversation_id': conversation_id,
+        }), 200
+
+    # ── Construir historial de mensajes para el LLM ────────────────────────
+    # El mensaje del profesor ya fue persistido arriba, por lo que list_agent_chat_history
+    # lo devuelve como último entry — no hay que añadirlo manualmente al final.
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from agent_tools import AGENT_TOOLS, get_llm_with_tools
+
+    system_prompt = (
+        'Eres un asistente académico especializado en los documentos del curso. '
+        'Responde únicamente preguntas relacionadas con el contenido de los documentos disponibles. '
+        'Si una pregunta no tiene relación con los materiales del curso, indícalo con cortesía '
+        'y pide al usuario que reformule su consulta. Responde siempre en español.'
+    )
+
+    history = list_agent_chat_history(course_id, conversation_id)
+    lc_messages = [SystemMessage(content=system_prompt)]
+
+    for entry in history:
+        if entry['sender_type'] == 'profesor':
+            lc_messages.append(HumanMessage(content=entry['message_text']))
+        else:
+            lc_messages.append(AIMessage(content=entry['message_text']))
+
+    # ── Llamada al LLM con tools ───────────────────────────────────────────
+    try:
+        llm = get_llm_with_tools()
+        ai_response = llm.invoke(lc_messages)
+        sources = []
+        tool_calls = getattr(ai_response, 'tool_calls', []) or []
+
+        if tool_calls:
+            tools_by_name = {t.name: t for t in AGENT_TOOLS}
+            tool_messages = []
+
+            for tool_call in tool_calls:
+                tool_name = tool_call['name']
+                tool_args = tool_call['args']
+                tool_call_id = tool_call['id']
+
+                if tool_name in tools_by_name:
+                    tool_result = str(tools_by_name[tool_name].invoke(tool_args))
+
+                    # Extraer nombres de archivo del output formateado de la tool
+                    for line in tool_result.splitlines():
+                        match = re.search(r'Fuente:\s*(.+?)\s*\|', line)
+                        if match:
+                            source = match.group(1).strip()
+                            if source and source not in sources:
+                                sources.append(source)
+
+                    tool_messages.append(
+                        ToolMessage(content=tool_result, tool_call_id=tool_call_id)
+                    )
+
+            # Segunda llamada con los resultados de las tools para obtener la respuesta final
+            ai_response = llm.invoke(lc_messages + [ai_response] + tool_messages)
+
+        final_text = str(getattr(ai_response, 'content', '') or '').strip()
+
+        if not final_text:
+            final_text = 'No pude generar una respuesta. Por favor, intenta de nuevo.'
+
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        return jsonify({'error': f'Error al procesar la respuesta del agente: {str(e)}'}), 500
+
+    # Guardar respuesta del agente
+    save_agent_chat_message(course_id, conversation_id, 'agente', final_text)
+
+    return jsonify({
+        'response': final_text,
+        'sources': sources,
+        'conversation_id': conversation_id,
+    }), 200
+
+
 if __name__ == '__main__':
 
     app.run(debug = True, host = 'localhost', port = 5000)
