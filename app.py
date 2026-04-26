@@ -3151,6 +3151,26 @@ def get_retrieval_metrics():
 
     return jsonify({'total': len(metrics), 'metrics': metrics}), 200
 
+# HITL Dashboard - Página de revisión de sugerencias
+
+@app.route('/review/<course>')
+@admin_required
+def review_page(course):
+    """Renderiza el dashboard HITL de revisión de sugerencias del agente."""
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute("SELECT id FROM courses WHERE name = ?", (course,))
+    result = c.fetchone()
+    con.close()
+
+    if not result:
+        return redirect(url_for('index'))
+
+    course_id = result[0]
+    return render_template('review.html', course=course, course_id=course_id)
+
+
 # HITL Dashboard - Sugerencias del Agente
 
 @app.route('/api/agent/suggestions', methods=['GET'])
