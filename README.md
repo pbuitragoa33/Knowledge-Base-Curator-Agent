@@ -30,6 +30,12 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Confirmación antes de eliminar.
 * Interfaz moderna y responsiva.
 * Registro de métricas de recuperación por consulta (estrategia, Top-N, ids recuperados, scores y usuario).
+* Workflow del agente con LangGraph para análisis y generación estructurada de sugerencias en estado `pendiente`.
+* Tool-calling en chat del agente con recuperación semántica sobre documentos del curso.
+* Observabilidad del agente con logs estructurados por nodo, prompt, respuesta LLM, tools y errores.
+* Dashboard HITL para revisión humana de sugerencias (`aprobar` / `rechazar`) y trazabilidad por conversación.
+* Interfaz de chat dedicada para profesores/admin con listado de fuentes consultadas por respuesta.
+* Hook de pre-commit con `detect-secrets` para prevenir fuga accidental de secretos e información sensible.
 
 ## Estructura del Proyecto
 
@@ -37,9 +43,13 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 Knowledge Base Curator Agent/
 ├── app.py                    # Servidor Flask con la lógica principal (orquestador)
 ├── agent_workflow.py         # Workflow base de LangGraph con OpenAI
+├── agent_tools.py            # Herramientas del agente (tool-calling sobre documentos del curso)
 ├── document_processing.py    # Extracción/chunking de texto por archivo
 ├── embedding_processing.py   # Proveedores y payloads de embeddings
+├── keyword_search.py         # Búsqueda BM25 y fusión híbrida (RRF)
+├── observability.py          # Logging estructurado del agente y depuración
 ├── vector_store.py           # Persistencia y consultas en ChromaDB
+├── .pre-commit-config.yaml   # Hook detect-secrets para validación previa a commits
 ├── requirements.txt          # Dependencias Python
 ├── .env.example              # Variables de entorno de ejemplo para LLM
 ├── database.db               # Base de datos SQLite
@@ -53,7 +63,9 @@ Knowledge Base Curator Agent/
 │   ├── login.html            # Página de autenticación
 │   ├── signup.html           # Página de registro de usuarios
 │   ├── index.html            # Página de gestión de cursos
-│   └── upload.html           # Página de documentos, comentarios y búsqueda semántica
+│   ├── upload.html           # Página de documentos, comentarios y búsqueda semántica
+│   ├── chat.html             # Interfaz de chat con el agente por curso
+│   └── review.html           # Dashboard HITL para revisar sugerencias del agente
 ├── static/
 │   └── style.css            # Estilos CSS
 ├── tests/
@@ -241,11 +253,41 @@ Los scripts asociados se encuentran en `sql/003_agent_prompts_schema.sql` y `sql
 Se agrego `agent_workflow.py` como base de integracion con LangGraph y OpenAI:
 
 - Usa `OPENAI_API_KEY` y `OPENAI_MODEL` desde variables de entorno.
-- Toma el prompt activo `chat` desde `agent_prompts` mediante `get_active_prompt('chat')`.
-- Define `AgentState` con `messages`, `course_id`, `extracted_context` y `suggestions`.
-- Expone `run_agent_once(...)` para ejecutar un turno minimo en memoria sin persistir todavia el resultado.
+- Define `AgentState` con `messages`, `course_id`, `conversation_id`, `extracted_context`, `analysis_output` y `suggestions`.
+- Implementa dos nodos en el grafo: `analyze_course` (análisis) y `generate_suggestions` (formateo y persistencia).
+- Obtiene prompts activos desde `agent_prompts` para `analisis` y `formateo` vía `get_active_prompt(...)`.
+- Normaliza y valida sugerencias (`tipo`, `input_context`, `razonamiento`, `evidencia_ids`) antes de persistirlas con `save_agent_suggestion(...)` en estado `pendiente`.
+- Expone `run_agent_once(...)` para ejecutar el workflow compilado y retornar el estado actualizado.
 
 La configuracion local esperada queda documentada en `.env.example`. Issue 45 usa OpenAI unicamente; Gemini queda fuera del alcance actual.
+
+### Tools del Agente
+
+Se agrego `agent_tools.py` para habilitar tool-calling sobre el contenido del curso:
+
+- Define la tool `search_course_documents(query, course_id, top_n=5)` para recuperar evidencia semántica por `course_id`.
+- Reutiliza un proveedor local de embeddings (`LocalSentenceTransformerProvider`) para reducir sobrecosto en inferencia.
+- Restringe `top_n` al rango permitido y retorna resultados con fuente (`filename`) y `score`.
+- Expone `AGENT_TOOLS` y `get_llm_with_tools()` para enlazar herramientas al modelo (`bind_tools`).
+
+### Observabilidad del Agente
+
+Se agrego `observability.py` para trazabilidad operativa del agente:
+
+- Logs estructurados para entrada/salida de nodos (`log_node_input`, `log_node_output`).
+- Registro de prompts enviados y respuestas crudas del LLM (`log_prompt`, `log_llm_response`).
+- Registro de invocación y resultado de tools (`log_tool_invocation`, `log_tool_result`).
+- Captura de errores por nodo o tool (`log_agent_error`).
+- Modo de depuración detallada vía variable de entorno `DEBUG_AGENT=True`.
+
+### Human-in-the-Loop (HITL)
+
+El flujo HITL quedó integrado en `app.py` y en la interfaz:
+
+- Persistencia de mensajes en `agent_chat_history` por `course_id` + `conversation_id`.
+- Persistencia de sugerencias en `agent_suggestions` con estado inicial `pendiente`.
+- Resolución humana de sugerencias con transición a `aprobado` o `rechazado` y registro de `reviewed_by` / `reviewed_at`.
+- Rutas de vista dedicadas: `/chat/<course>` y `/review/<course>` para interacción y revisión.
 
 ## Formatos de Archivo Soportados
 
@@ -263,6 +305,8 @@ La configuracion local esperada queda documentada en `.env.example`. Issue 45 us
 - Consultar historial de documentos y comparar versiones (Diff)
 - Descargar documentos
 - Ver comentarios de estudiantes
+- Chatear con el agente de curaduría por curso
+- Revisar y resolver sugerencias del agente (HITL)
 - Cambiar de curso y cerrar sesión
 
 ### Profesor
@@ -271,6 +315,8 @@ La configuracion local esperada queda documentada en `.env.example`. Issue 45 us
 - Consultar historial de documentos y comparar versiones
 - Descargar documentos
 - Ver comentarios de estudiantes
+- Chatear con el agente de curaduría por curso
+- Revisar y resolver sugerencias del agente (HITL)
 - Cambiar de curso y cerrar sesión
 
 ### Estudiante
@@ -329,6 +375,15 @@ La configuracion local esperada queda documentada en `.env.example`. Issue 45 us
 - Parámetros opcionales:
   - `course_code`: filtra por curso
   - `limit`: máximo de registros (tope 200)
+
+### Vistas HITL
+- `GET /chat/<course>` - Renderiza la interfaz de chat del agente para el curso (admin/profesor).
+- `GET /review/<course>` - Renderiza el dashboard de revisión de sugerencias (admin/profesor).
+
+### Agente de Curaduría (HITL)
+- `GET /api/agent/suggestions?course_id=<id>` - Lista sugerencias pendientes del curso.
+- `POST /api/agent/suggestions/<int:suggestion_id>/resolve` - Marca sugerencia como `aprobado` o `rechazado`.
+- `POST /api/agent/chat` - Ejecuta chat contextual con tool-calling y retorna respuesta + fuentes.
 
 
 ### Sincronización de Vector Store en Eliminación y Versionado
@@ -392,6 +447,17 @@ Consulta de métricas:
   - Nombre del archivo
   - Fecha de subida
 - Para chunks largos se incorporó interacción "Ver más / Ver menos".
+- En la vista del curso (`upload.html`) se añadió acceso directo a "Chatear con el Agente" para admin/profesor.
+- La interfaz `chat.html` implementa conversación por curso con `conversation_id`, indicador de escritura, manejo de errores y despliegue colapsable de fuentes.
+- La interfaz `review.html` implementa tarjetas de sugerencias pendientes con acciones de aprobación/rechazo en línea.
+
+### Pre-commits y Protección de Información
+
+- Se incorporó `.pre-commit-config.yaml` con el hook `detect-secrets` para bloquear commits con secretos detectables.
+- Activación sugerida del hook local:
+  - `pip install pre-commit`
+  - `pre-commit install`
+  - `pre-commit run --all-files`
 
 ### Pruebas
 
@@ -418,5 +484,5 @@ Consulta de métricas:
 
 
 **Versión**: 1.0 
-**Última actualización**: Marzo, 2026 
+**Última actualización**: Abril, 2026 
 **Desarrollado con**: Python, Flask, HTML5, CSS3, JavaScript
