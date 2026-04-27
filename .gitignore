@@ -434,3 +434,6 @@ __pycache__/
 
 # Archivos tempprales
 tests/
+
+# Entorno virtual
+kbca_venv/

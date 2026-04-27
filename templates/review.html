@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Revisión de Sugerencias - {{ course }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        /* Badges de tipo */
+        .suggestion-badge {
+            display: inline-block;
+            color: white;
+            font-size: 0.82em;
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 20px;
+            letter-spacing: 0.03em;
+            text-transform: capitalize;
+        }
+
+        /* Cabecera de cada tarjeta (badge + fecha) */
+        .suggestion-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .suggestion-date {
+            color: #999;
+            font-size: 0.85em;
+        }
+
+        /* Campos de contenido */
+        .suggestion-field {
+            margin-bottom: 14px;
+        }
+
+        .suggestion-field strong {
+            display: block;
+            color: #555;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+
+        .suggestion-field p {
+            color: #333;
+            line-height: 1.5;
+            margin: 0;
+            white-space: pre-wrap;
+        }
+
+        .evidence-ids {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            background: #f0f0f0;
+            padding: 6px 10px;
+            border-radius: 4px;
+            color: #764ba2;
+        }
+
+        /* Fila de botones: anula el width: 100% global */
+        .suggestion-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .suggestion-actions .btn {
+            width: auto;
+            margin-top: 0;
+            flex: 1;
+        }
+
+        /* Tarjetas con borde izquierdo de acento */
+        .suggestion-card {
+            border-left: 4px solid #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-top">
+            <a href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small">← Volver al Curso</a>
+            <h1>Revisión de Sugerencias</h1>
+            <div class="user-info">
+                <span>👤 {{ session.get('user', 'Usuario') }}</span>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Sugerencias Pendientes — {{ course }}</h2>
+            <p class="subtitle-sm">
+                Revisa cada sugerencia generada por el agente de curaduría y decide si aprobarla o rechazarla.
+            </p>
+            <div id="suggestionsContainer">
+                <p class="loading">Cargando sugerencias...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const courseId = {{ course_id }};
+
+        const TIPO_CONFIG = {
+            'redundancia':     { label: 'Redundancia',      color: '#fd7e14' },
+            'deactualizacion': { label: 'Desactualización', color: '#17a2b8' },
+            'conflicto':       { label: 'Conflicto',        color: '#dc3545' },
+        };
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function buildBadge(tipo) {
+            const config = TIPO_CONFIG[tipo] || { label: escapeHtml(tipo), color: '#6c757d' };
+            return `<span class="suggestion-badge" style="background: ${config.color}">${config.label}</span>`;
+        }
+
+        function buildCard(s) {
+            const evidencia = Array.isArray(s.evidencia_ids)
+                ? s.evidencia_ids.join(', ')
+                : escapeHtml(String(s.evidencia_ids ?? ''));
+
+            return `
+                <div class="card suggestion-card" id="suggestion-${s.id}">
+                    <div class="suggestion-header">
+                        ${buildBadge(s.tipo)}
+                        <span class="suggestion-date">${escapeHtml(s.created_at)}</span>
+                    </div>
+                    <div class="suggestion-body">
+                        <div class="suggestion-field">
+                            <strong>Contexto analizado</strong>
+                            <p>${escapeHtml(s.input_context)}</p>
+                        </div>
+                        <div class="suggestion-field">
+                            <strong>Razonamiento del agente</strong>
+                            <p>${escapeHtml(s.razonamiento)}</p>
+                        </div>
+                        <div class="suggestion-field">
+                            <strong>Chunks de evidencia</strong>
+                            <p class="evidence-ids">${escapeHtml(evidencia)}</p>
+                        </div>
+                    </div>
+                    <div class="suggestion-actions">
+                        <button class="btn btn-success" onclick="resolve(${s.id}, 'aprobado', this)">✓ Aprobar</button>
+                        <button class="btn btn-danger"  onclick="resolve(${s.id}, 'rechazado', this)">✕ Rechazar</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadSuggestions() {
+            const container = document.getElementById('suggestionsContainer');
+            container.innerHTML = '<p class="loading">Cargando sugerencias...</p>';
+
+            try {
+                const response = await fetch(`/api/agent/suggestions?course_id=${courseId}`);
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    container.innerHTML = `<div class="error-message">Error: ${escapeHtml(err.error || 'No se pudieron cargar las sugerencias')}</div>`;
+                    return;
+                }
+
+                const suggestions = await response.json();
+
+                if (suggestions.length === 0) {
+                    container.innerHTML = '<p class="no-data">No hay sugerencias pendientes para este curso.</p>';
+                    return;
+                }
+
+                container.innerHTML = suggestions.map(buildCard).join('');
+
+            } catch (error) {
+                container.innerHTML = `<div class="error-message">Error: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        async function resolve(suggestionId, estado, button) {
+            const card = document.getElementById(`suggestion-${suggestionId}`);
+            const buttons = card.querySelectorAll('button');
+            buttons.forEach(b => b.disabled = true);
+
+            try {
+                const response = await fetch(`/api/agent/suggestions/${suggestionId}/resolve`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ estado }),
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert(`Error: ${err.error || 'No se pudo resolver la sugerencia'}`);
+                    buttons.forEach(b => b.disabled = false);
+                    return;
+                }
+
+                card.style.transition = 'opacity 0.3s ease';
+                card.style.opacity = '0';
+                setTimeout(() => {
+                    card.remove();
+                    const container = document.getElementById('suggestionsContainer');
+                    if (!container.querySelector('.suggestion-card')) {
+                        container.innerHTML = '<p class="no-data">No hay sugerencias pendientes para este curso.</p>';
+                    }
+                }, 300);
+
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+                buttons.forEach(b => b.disabled = false);
+            }
+        }
+
+        loadSuggestions();
+    </script>
+</body>
+</html>

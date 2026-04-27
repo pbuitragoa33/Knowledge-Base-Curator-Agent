@@ -13,6 +13,9 @@ ISSUE_TEST_MODULES = [
     "test_issue_13",
     "test_issue_14",
     "test_issue_15",
+    "test_issue_19",
+    "test_issue_20",
+    "test_issue_21",
 ]
 
 

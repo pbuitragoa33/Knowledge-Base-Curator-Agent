@@ -78,6 +78,24 @@ EMBEDDING_DEVICE = os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE)
 EMBEDDING_DIMENSION = DEFAULT_EMBEDDING_DIMENSION
 QUERY_TOP_N_DEFAULT = _read_positive_int_env('QUERY_TOP_N_DEFAULT', 5)
 QUERY_TOP_N_MAX = _read_positive_int_env('QUERY_TOP_N_MAX', 20)
+PROMPT_TYPES = ('analisis', 'chat', 'formateo')
+DEFAULT_AGENT_PROMPTS = {
+    'analisis': (
+        'Eres un analista de curaduria academica. Revisa el material del curso {{course_name}} '
+        'usando solo {{contexto_recuperado}}. Detecta redundancia, deactualizacion y conflictos. '
+        'Si la evidencia es insuficiente, dilo explicitamente. No inventes fuentes ni hechos.'
+    ),
+    'chat': (
+        'Eres un asistente de curaduria para docentes del curso {{course_name}}. Responde en '
+        'espanol usando {{historial_chat}} y {{contexto_recuperado}}. Prioriza claridad, '
+        'trazabilidad y evidencia disponible. Diferencia hechos observados de sugerencias.'
+    ),
+    'formateo': (
+        'Transforma {{hallazgos}} en sugerencias listas para revision humana. Para cada '
+        'sugerencia entrega exactamente: tipo, input_context, razonamiento y evidencia_ids. '
+        'No agregues campos extra y no inventes evidencia.'
+    ),
+}
 CHUNK_REGISTRY = {}
 UPLOAD_CHUNK_INDEX = {}
 EMBEDDING_REGISTRY = {}
@@ -362,6 +380,145 @@ def _ensure_courses_schema(con, cursor):
     con.execute("PRAGMA foreign_keys = ON")
 
 
+def get_db_connection():
+
+    """Crea una conexión SQLite con llaves foráneas habilitadas."""
+
+    con = sqlite3.connect(DATABASE)
+    con.execute("PRAGMA foreign_keys = ON")
+    return con
+
+
+def _normalize_prompt_type(tipo_prompt):
+
+    """Normaliza el tipo de prompt para consultas internas."""
+
+    return str(tipo_prompt or '').strip().lower()
+
+
+def _create_agent_traceability_tables(cursor):
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_chat_history
+                 (id INTEGER PRIMARY KEY,
+                  course_id INTEGER NOT NULL,
+                  conversation_id TEXT NOT NULL,
+                  sender_type TEXT NOT NULL CHECK(sender_type IN ('profesor', 'agente')),
+                  sender_username TEXT,
+                  message_text TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  FOREIGN KEY(course_id) REFERENCES courses(id),
+                  CHECK(
+                      (sender_type = 'profesor' AND sender_username IS NOT NULL AND TRIM(sender_username) <> '')
+                      OR
+                      (sender_type = 'agente' AND sender_username IS NULL)
+                  ))''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_suggestions
+                 (id INTEGER PRIMARY KEY,
+                  course_id INTEGER NOT NULL,
+                  conversation_id TEXT,
+                  tipo TEXT NOT NULL CHECK(tipo IN ('redundancia', 'deactualizacion', 'conflicto')),
+                  input_context TEXT NOT NULL,
+                  razonamiento TEXT NOT NULL,
+                  evidencia_ids TEXT NOT NULL,
+                  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK(estado IN ('pendiente', 'aprobado', 'rechazado')),
+                  created_at TEXT NOT NULL,
+                  reviewed_at TEXT,
+                  reviewed_by TEXT,
+                  FOREIGN KEY(course_id) REFERENCES courses(id),
+                  CHECK(
+                      (estado = 'pendiente' AND reviewed_at IS NULL AND reviewed_by IS NULL)
+                      OR
+                      (estado IN ('aprobado', 'rechazado') AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL AND TRIM(reviewed_by) <> '')
+                  ))''')
+
+
+def _create_agent_prompts_table(cursor):
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_prompts
+                 (id INTEGER PRIMARY KEY,
+                  tipo_prompt TEXT NOT NULL CHECK(tipo_prompt IN ('analisis', 'chat', 'formateo')),
+                  version INTEGER NOT NULL CHECK(version > 0),
+                  prompt_text TEXT NOT NULL CHECK(TRIM(prompt_text) <> ''),
+                  is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0, 1)),
+                  fecha_creacion TEXT NOT NULL)''')
+
+
+def _create_agent_traceability_indexes(cursor):
+
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_conversation_created_at
+           ON agent_chat_history(course_id, conversation_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_created_at
+           ON agent_chat_history(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_created_at
+           ON agent_suggestions(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_estado_created_at
+           ON agent_suggestions(course_id, estado, created_at)'''
+    )
+
+
+def _create_agent_prompt_indexes(cursor):
+
+    cursor.execute(
+        '''CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_tipo_version
+           ON agent_prompts(tipo_prompt, version)'''
+    )
+    cursor.execute(
+        '''CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_single_active_per_type
+           ON agent_prompts(tipo_prompt)
+           WHERE is_active = 1'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_prompts_tipo_active
+           ON agent_prompts(tipo_prompt, is_active)'''
+    )
+
+
+def _seed_agent_prompts(cursor):
+
+    """Inserta prompts base sin sobrescribir datos existentes."""
+
+    for tipo_prompt, prompt_text in DEFAULT_AGENT_PROMPTS.items():
+
+        cursor.execute(
+            '''SELECT 1 FROM agent_prompts
+               WHERE tipo_prompt = ? AND version = 1''',
+            (tipo_prompt,)
+        )
+
+        if cursor.fetchone():
+
+            continue
+
+        cursor.execute(
+            '''SELECT 1 FROM agent_prompts
+               WHERE tipo_prompt = ? AND is_active = 1''',
+            (tipo_prompt,)
+        )
+        has_active_version = cursor.fetchone() is not None
+        created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.execute(
+            '''INSERT INTO agent_prompts
+               (tipo_prompt, version, prompt_text, is_active, fecha_creacion)
+               VALUES (?, ?, ?, ?, ?)''',
+            (
+                tipo_prompt,
+                1,
+                prompt_text,
+                0 if has_active_version else 1,
+                created_at,
+            )
+        )
+
+
 # --------------------------------------------------
 # Acciones relacinadas a la Base de Datos (SQLite3)
 # --------------------------------------------------
@@ -373,7 +530,7 @@ def _ensure_courses_schema(con, cursor):
 
 def init_db():
 
-    con = sqlite3.connect(DATABASE)
+    con = get_db_connection()
     c = con.cursor()
 
     # Tabla de Usuario
@@ -513,11 +670,472 @@ def init_db():
               scores TEXT NOT NULL,
               user TEXT NOT NULL)''')
 
+    _create_agent_traceability_tables(c)
+    _create_agent_traceability_indexes(c)
+    _create_agent_prompts_table(c)
+    _create_agent_prompt_indexes(c)
+    _seed_agent_prompts(c)
+
     con.commit()
     con.close()
 
 
 init_db()
+
+
+def seed_agent_prompts():
+
+    """Ejecuta la siembra idempotente de prompts base."""
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        _seed_agent_prompts(c)
+        con.commit()
+
+    finally:
+
+        con.close()
+
+
+def _serialize_evidence_ids(evidence_ids):
+
+    """Serializa ids de evidencia para almacenamiento en SQLite."""
+
+    if evidence_ids is None:
+
+        evidence_ids = []
+
+    return json.dumps([str(evidence_id) for evidence_id in evidence_ids])
+
+
+def _deserialize_evidence_ids(raw_value):
+
+    """Convierte el campo serializado de evidencia a una lista Python."""
+
+    if not raw_value:
+
+        return []
+
+    try:
+
+        decoded = json.loads(raw_value)
+
+    except (TypeError, ValueError):
+
+        return []
+
+    if not isinstance(decoded, list):
+
+        return []
+
+    return [str(item) for item in decoded]
+
+
+def save_agent_chat_message(course_id, conversation_id, sender_type, message_text, sender_username = None):
+
+    """Guarda un mensaje de trazabilidad entre profesor y agente."""
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_sender_username = sender_username.strip() if isinstance(sender_username, str) else None
+    normalized_conversation_id = str(conversation_id or '').strip()
+    normalized_message_text = str(message_text or '').strip()
+    normalized_sender_type = str(sender_type or '').strip()
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''INSERT INTO agent_chat_history
+               (course_id, conversation_id, sender_type, sender_username, message_text, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (
+                int(course_id),
+                normalized_conversation_id,
+                normalized_sender_type,
+                normalized_sender_username,
+                normalized_message_text,
+                created_at,
+            )
+        )
+        con.commit()
+        return c.lastrowid
+
+    finally:
+
+        con.close()
+
+
+def save_agent_suggestion(
+    course_id,
+    tipo,
+    input_context,
+    razonamiento,
+    evidencia_ids,
+    estado = 'pendiente',
+    conversation_id = None,
+    reviewed_by = None,
+):
+
+    """Guarda una sugerencia generada por el agente para auditoría futura."""
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_estado = str(estado or 'pendiente').strip()
+    normalized_reviewed_by = reviewed_by.strip() if isinstance(reviewed_by, str) else None
+    normalized_reviewed_at = created_at if normalized_estado in ('aprobado', 'rechazado') and normalized_reviewed_by else None
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''INSERT INTO agent_suggestions
+               (course_id, conversation_id, tipo, input_context, razonamiento,
+                evidencia_ids, estado, created_at, reviewed_at, reviewed_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (
+                int(course_id),
+                str(conversation_id or '').strip() or None,
+                str(tipo or '').strip(),
+                str(input_context or '').strip(),
+                str(razonamiento or '').strip(),
+                _serialize_evidence_ids(evidencia_ids),
+                normalized_estado,
+                created_at,
+                normalized_reviewed_at,
+                normalized_reviewed_by,
+            )
+        )
+        con.commit()
+        return c.lastrowid
+
+    finally:
+
+        con.close()
+
+
+def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
+
+    """Lista mensajes del historial del agente para un curso."""
+
+    normalized_limit = max(1, int(limit))
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        if conversation_id:
+
+            c.execute(
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                   FROM agent_chat_history
+                   WHERE course_id = ? AND conversation_id = ?
+                   ORDER BY created_at ASC, id ASC
+                   LIMIT ?''',
+                (int(course_id), str(conversation_id).strip(), normalized_limit)
+            )
+
+        else:
+
+            c.execute(
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                   FROM agent_chat_history
+                   WHERE course_id = ?
+                   ORDER BY created_at ASC, id ASC
+                   LIMIT ?''',
+                (int(course_id), normalized_limit)
+            )
+
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    history = []
+
+    for row in rows:
+
+        history.append({
+            'id': row[0],
+            'course_id': row[1],
+            'conversation_id': row[2],
+            'sender_type': row[3],
+            'sender_username': row[4],
+            'message_text': row[5],
+            'created_at': row[6],
+        })
+
+    return history
+
+
+def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
+
+    """Lista sugerencias de un curso con filtros opcionales."""
+
+    normalized_limit = max(1, int(limit))
+    where_clauses = ['course_id = ?']
+    parameters = [int(course_id)]
+
+    if estado:
+
+        where_clauses.append('estado = ?')
+        parameters.append(str(estado).strip())
+
+    if tipo:
+
+        where_clauses.append('tipo = ?')
+        parameters.append(str(tipo).strip())
+
+    parameters.append(normalized_limit)
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            f'''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                       evidencia_ids, estado, created_at, reviewed_at, reviewed_by
+                FROM agent_suggestions
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?'''
+            ,
+            tuple(parameters)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    suggestions = []
+
+    for row in rows:
+
+        suggestions.append({
+            'id': row[0],
+            'course_id': row[1],
+            'conversation_id': row[2],
+            'tipo': row[3],
+            'input_context': row[4],
+            'razonamiento': row[5],
+            'evidencia_ids': _deserialize_evidence_ids(row[6]),
+            'estado': row[7],
+            'created_at': row[8],
+            'reviewed_at': row[9],
+            'reviewed_by': row[10],
+        })
+
+    return suggestions
+
+
+def update_agent_suggestion_status(suggestion_id, estado, reviewed_by):
+
+    """Actualiza el estado final de una sugerencia revisada por una persona."""
+
+    reviewed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_reviewed_by = reviewed_by.strip() if isinstance(reviewed_by, str) else None
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''UPDATE agent_suggestions
+               SET estado = ?, reviewed_at = ?, reviewed_by = ?
+               WHERE id = ?''',
+            (
+                str(estado or '').strip(),
+                reviewed_at,
+                normalized_reviewed_by,
+                int(suggestion_id),
+            )
+        )
+        con.commit()
+        return c.rowcount > 0
+
+    finally:
+
+        con.close()
+
+
+def get_active_prompt(tipo_prompt):
+
+    """Retorna el prompt activo para un tipo dado, si existe."""
+
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+
+    if not normalized_tipo_prompt:
+
+        return None
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT prompt_text
+               FROM agent_prompts
+               WHERE tipo_prompt = ? AND is_active = 1
+               ORDER BY version DESC
+               LIMIT 1''',
+            (normalized_tipo_prompt,)
+        )
+        row = c.fetchone()
+
+    finally:
+
+        con.close()
+
+    return row[0] if row else None
+
+
+def list_agent_prompts(tipo_prompt = None, include_inactive = True):
+
+    """Lista versiones de prompts para soporte interno y pruebas."""
+
+    where_clauses = []
+    parameters = []
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+
+    if normalized_tipo_prompt:
+
+        where_clauses.append('tipo_prompt = ?')
+        parameters.append(normalized_tipo_prompt)
+
+    if not include_inactive:
+
+        where_clauses.append('is_active = 1')
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            f'''SELECT id, tipo_prompt, version, prompt_text, is_active, fecha_creacion
+                FROM agent_prompts
+                {where_sql}
+                ORDER BY tipo_prompt ASC, version DESC, id DESC''',
+            tuple(parameters)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    prompts = []
+
+    for row in rows:
+
+        prompts.append({
+            'id': row[0],
+            'tipo_prompt': row[1],
+            'version': row[2],
+            'prompt_text': row[3],
+            'is_active': bool(row[4]),
+            'fecha_creacion': row[5],
+        })
+
+    return prompts
+
+
+def create_agent_prompt_version(tipo_prompt, prompt_text, is_active = False):
+
+    """Crea una nueva version de prompt dentro de su familia."""
+
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+    normalized_prompt_text = str(prompt_text or '').strip()
+    normalized_is_active = bool(is_active)
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT COALESCE(MAX(version), 0)
+               FROM agent_prompts
+               WHERE tipo_prompt = ?''',
+            (normalized_tipo_prompt,)
+        )
+        next_version = int(c.fetchone()[0]) + 1
+
+        if normalized_is_active:
+
+            c.execute(
+                '''UPDATE agent_prompts
+                   SET is_active = 0
+                   WHERE tipo_prompt = ?''',
+                (normalized_tipo_prompt,)
+            )
+
+        c.execute(
+            '''INSERT INTO agent_prompts
+               (tipo_prompt, version, prompt_text, is_active, fecha_creacion)
+               VALUES (?, ?, ?, ?, ?)''',
+            (
+                normalized_tipo_prompt,
+                next_version,
+                normalized_prompt_text,
+                1 if normalized_is_active else 0,
+                created_at,
+            )
+        )
+        con.commit()
+        return c.lastrowid
+
+    finally:
+
+        con.close()
+
+
+def activate_agent_prompt_version(tipo_prompt, version):
+
+    """Activa una version existente y desactiva las demas del mismo tipo."""
+
+    normalized_tipo_prompt = _normalize_prompt_type(tipo_prompt)
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT 1
+               FROM agent_prompts
+               WHERE tipo_prompt = ? AND version = ?''',
+            (normalized_tipo_prompt, int(version))
+        )
+
+        if c.fetchone() is None:
+
+            return False
+
+        c.execute(
+            '''UPDATE agent_prompts
+               SET is_active = 0
+               WHERE tipo_prompt = ?''',
+            (normalized_tipo_prompt,)
+        )
+        c.execute(
+            '''UPDATE agent_prompts
+               SET is_active = 1
+               WHERE tipo_prompt = ? AND version = ?''',
+            (normalized_tipo_prompt, int(version))
+        )
+        con.commit()
+        return c.rowcount > 0
+
+    finally:
+
+        con.close()
 
 
 # ---------------------------------
@@ -2532,6 +3150,253 @@ def get_retrieval_metrics():
         })
 
     return jsonify({'total': len(metrics), 'metrics': metrics}), 200
+
+# HITL Dashboard - Página de revisión de sugerencias
+
+@app.route('/review/<course>')
+@admin_required
+def review_page(course):
+    """Renderiza el dashboard HITL de revisión de sugerencias del agente."""
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute("SELECT id FROM courses WHERE name = ?", (course,))
+    result = c.fetchone()
+    con.close()
+
+    if not result:
+        return redirect(url_for('index'))
+
+    course_id = result[0]
+    return render_template('review.html', course=course, course_id=course_id)
+
+
+# HITL Dashboard - Página de chat con el agente
+
+@app.route('/chat/<course>')
+@admin_required
+def chat_page(course):
+    """Renderiza la interfaz de chat con el agente de curaduría."""
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute('SELECT id FROM courses WHERE name = ?', (course,))
+    result = c.fetchone()
+    con.close()
+
+    if not result:
+        return redirect(url_for('index'))
+
+    course_id = result[0]
+    return render_template('chat.html', course=course, course_id=course_id)
+
+
+# HITL Dashboard - Sugerencias del Agente
+
+@app.route('/api/agent/suggestions', methods=['GET'])
+@admin_required
+def get_agent_suggestions():
+    """Lista sugerencias pendientes del agente para un curso."""
+
+    course_id = request.args.get('course_id', '').strip()
+
+    if not course_id:
+        return jsonify({'error': 'El parámetro course_id es requerido'}), 400
+
+    try:
+        course_id_int = int(course_id)
+    except ValueError:
+        return jsonify({'error': 'course_id debe ser un número entero'}), 400
+
+    suggestions = list_agent_suggestions(course_id_int, estado='pendiente')
+    return jsonify(suggestions), 200
+
+
+@app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
+@admin_required
+def resolve_agent_suggestion(suggestion_id):
+    """Aprueba o rechaza una sugerencia del agente."""
+
+    data = request.get_json(silent=True) or {}
+    estado = str(data.get('estado', '')).strip()
+
+    if estado not in ('aprobado', 'rechazado'):
+        return jsonify({'error': "El campo 'estado' debe ser 'aprobado' o 'rechazado'"}), 400
+
+    reviewed_by = session['user']
+    updated = update_agent_suggestion_status(suggestion_id, estado, reviewed_by)
+
+    if not updated:
+        return jsonify({'error': 'Sugerencia no encontrada'}), 404
+
+    return jsonify({'message': f'Sugerencia {suggestion_id} marcada como {estado}'}), 200
+
+
+# ── Proveedor de embeddings reutilizable para el endpoint de chat ──────────
+
+_AGENT_CHAT_EMBEDDING_PROVIDER = None
+
+
+def _get_agent_chat_embedding_provider():
+    """Inicializa y reutiliza el proveedor de embeddings para el chat del agente."""
+
+    global _AGENT_CHAT_EMBEDDING_PROVIDER
+
+    if _AGENT_CHAT_EMBEDDING_PROVIDER is None:
+        _AGENT_CHAT_EMBEDDING_PROVIDER = LocalSentenceTransformerProvider(
+            model_name=os.environ.get('EMBEDDING_MODEL_NAME', DEFAULT_EMBEDDING_MODEL_NAME),
+            batch_size=int(os.environ.get('EMBEDDING_BATCH_SIZE', DEFAULT_EMBEDDING_BATCH_SIZE)),
+            device=os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE),
+            embedding_dimension=DEFAULT_EMBEDDING_DIMENSION,
+        )
+
+    return _AGENT_CHAT_EMBEDDING_PROVIDER
+
+
+_AGENT_CHAT_SIMILARITY_THRESHOLD = 0.3
+
+
+@app.route('/api/agent/chat', methods=['POST'])
+@admin_required
+def agent_chat():
+    """Chat con el agente de curaduría académica sobre los documentos del curso."""
+
+    data = request.get_json(silent=True) or {}
+    message = str(data.get('message', '') or '').strip()
+    course_id_raw = data.get('course_id')
+    conversation_id = str(data.get('conversation_id', '') or '').strip()
+
+    if not message:
+        return jsonify({'error': "El campo 'message' es requerido"}), 400
+    if course_id_raw is None:
+        return jsonify({'error': "El campo 'course_id' es requerido"}), 400
+    if not conversation_id:
+        return jsonify({'error': "El campo 'conversation_id' es requerido"}), 400
+
+    try:
+        course_id = int(course_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "'course_id' debe ser un número entero"}), 400
+
+    # Resolver course_code desde la BD
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute('SELECT course_code FROM courses WHERE id = ?', (course_id,))
+    row = c.fetchone()
+    con.close()
+
+    if not row:
+        return jsonify({'error': 'Curso no encontrado'}), 404
+
+    course_code = row[0]
+
+    # Guardar mensaje del profesor
+    save_agent_chat_message(
+        course_id,
+        conversation_id,
+        'profesor',
+        message,
+        session['user'],
+    )
+
+    # ── Umbral de similitud vectorial ──────────────────────────────────────
+    try:
+        provider = _get_agent_chat_embedding_provider()
+        query_embedding = provider.embed_texts([message])[0]
+        threshold_results = query_course_embeddings(course_code, query_embedding, top_n=5)
+    except (EmbeddingGenerationError, VectorStoreError) as e:
+        return jsonify({'error': f'Error al procesar el mensaje: {str(e)}'}), 500
+
+    max_score = max((r['score'] for r in threshold_results), default=0.0)
+
+    if max_score < _AGENT_CHAT_SIMILARITY_THRESHOLD:
+        off_topic_msg = (
+            'Lo siento, tu pregunta no parece estar relacionada con los documentos del curso. '
+            'Por favor, reformúlala o consulta sobre los temas cubiertos en los materiales disponibles.'
+        )
+        save_agent_chat_message(course_id, conversation_id, 'agente', off_topic_msg)
+        return jsonify({
+            'response': off_topic_msg,
+            'sources': [],
+            'conversation_id': conversation_id,
+        }), 200
+
+    # ── Construir historial de mensajes para el LLM ────────────────────────
+    # El mensaje del profesor ya fue persistido arriba, por lo que list_agent_chat_history
+    # lo devuelve como último entry — no hay que añadirlo manualmente al final.
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from agent_tools import AGENT_TOOLS, get_llm_with_tools
+
+    system_prompt = (
+        f'Eres un asistente académico especializado en los documentos del curso (course_id={course_id}). '
+        f'Cuando necesites información de los documentos, usa search_course_documents con course_id={course_id}. '
+        'Responde únicamente preguntas relacionadas con el contenido de los documentos disponibles. '
+        'Si una pregunta no tiene relación con los materiales del curso, indícalo con cortesía '
+        'y pide al usuario que reformule su consulta. Responde siempre en español.'
+    )
+
+    history = list_agent_chat_history(course_id, conversation_id)
+    lc_messages = [SystemMessage(content=system_prompt)]
+
+    for entry in history:
+        if entry['sender_type'] == 'profesor':
+            lc_messages.append(HumanMessage(content=entry['message_text']))
+        else:
+            lc_messages.append(AIMessage(content=entry['message_text']))
+
+    # ── Llamada al LLM con tools ───────────────────────────────────────────
+    try:
+        llm = get_llm_with_tools()
+        ai_response = llm.invoke(lc_messages)
+        sources = []
+        tool_calls = getattr(ai_response, 'tool_calls', []) or []
+
+        if tool_calls:
+            tools_by_name = {t.name: t for t in AGENT_TOOLS}
+            tool_messages = []
+
+            for tool_call in tool_calls:
+                tool_name = tool_call['name']
+                tool_args = tool_call['args']
+                tool_call_id = tool_call['id']
+
+                if tool_name in tools_by_name:
+                    tool_result = str(tools_by_name[tool_name].invoke(tool_args))
+
+                    # Extraer nombres de archivo del output formateado de la tool
+                    for line in tool_result.splitlines():
+                        match = re.search(r'Fuente:\s*(.+?)\s*\|', line)
+                        if match:
+                            source = match.group(1).strip()
+                            if source and source not in sources:
+                                sources.append(source)
+
+                    tool_messages.append(
+                        ToolMessage(content=tool_result, tool_call_id=tool_call_id)
+                    )
+
+            # Segunda llamada con los resultados de las tools para obtener la respuesta final
+            ai_response = llm.invoke(lc_messages + [ai_response] + tool_messages)
+
+        final_text = str(getattr(ai_response, 'content', '') or '').strip()
+
+        if not final_text:
+            final_text = 'No pude generar una respuesta. Por favor, intenta de nuevo.'
+
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        return jsonify({'error': f'Error al procesar la respuesta del agente: {str(e)}'}), 500
+
+    # Guardar respuesta del agente
+    save_agent_chat_message(course_id, conversation_id, 'agente', final_text)
+
+    return jsonify({
+        'response': final_text,
+        'sources': sources,
+        'conversation_id': conversation_id,
+    }), 200
+
 
 if __name__ == '__main__':
 

@@ -10,6 +10,9 @@
     <div class="container">
         <div class="header-top">
             <a href="/" class="btn btn-secondary btn-small">← Cambiar Curso</a>
+            {% if session.get('role') in ['admin', 'profesor'] %}
+            <a href="{{ url_for('chat_page', course=course) }}" class="btn btn-primary btn-small">💬 Chatear con el Agente</a>
+            {% endif %}
             <h1>{{ course }}</h1>
             <div class="user-info">
                 <span>👤 {{ session.get('user', 'Usuario') }}</span>
