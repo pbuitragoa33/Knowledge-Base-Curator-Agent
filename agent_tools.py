@@ -19,7 +19,7 @@ from embedding_processing import (
 from vector_store import VectorStoreError, query_course_embeddings
 from observability import log_tool_invocation, log_tool_result, log_agent_error
 
-load_dotenv()
+load_dotenv(override=True)
 
 # ─────────────────────────────────────────
 # Proveedor de embeddings para las tools

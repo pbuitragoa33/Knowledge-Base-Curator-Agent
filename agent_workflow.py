@@ -22,7 +22,7 @@ from observability import (
     log_agent_error,
 )
 
-load_dotenv()
+load_dotenv(override=True)
 
 DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
 
