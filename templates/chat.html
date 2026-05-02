@@ -121,6 +121,112 @@
             border-bottom-left-radius: 4px;
         }
 
+        /* ── Feedback por respuesta (👍/👎) ───────────────────────────── */
+        .agent-feedback {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            font-size: 0.85em;
+            color: #666;
+        }
+
+        .feedback-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 999px;
+            border: 1px solid #ddd;
+            background: white;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .feedback-btn.selected {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+
+        .feedback-status {
+            color: #28a745;
+            font-weight: 600;
+        }
+
+        /* ── Modal calificacion general ───────────────────────────────── */
+        .exit-rating-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 50;
+        }
+
+        .exit-rating-backdrop.open {
+            display: flex;
+        }
+
+        .exit-rating-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px 22px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+        }
+
+        .exit-rating-card h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .exit-rating-card p {
+            margin: 0 0 16px 0;
+            color: #666;
+        }
+
+        .exit-rating-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .exit-rating-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 999px;
+            border: 1px solid #ddd;
+            background: white;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+        }
+
+        .exit-rating-btn.selected {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+
+        .exit-rating-status {
+            margin-top: 10px;
+            color: #28a745;
+            font-weight: 600;
+        }
+
+        .exit-rating-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 16px;
+        }
+
         /* ── Indicador de escritura ──────────────────────────────────────── */
         .typing-dots {
             display: flex;
@@ -224,11 +330,12 @@
 <body>
     <div class="container chat-outer">
         <div class="header-top">
-            <a href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small">← Volver al Curso</a>
+            <a id="backToCourseBtn" href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small">← Volver al Curso</a>
             <h1>Chat con el Agente</h1>
             <div class="user-info">
                 <span>👤 {{ session.get('user', 'Usuario') }}</span>
-                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+                <button id="resetChatBtn" class="btn btn-secondary btn-small" type="button">Reiniciar Chat</button>
+                <a id="logoutBtn" href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
             </div>
         </div>
 
@@ -258,13 +365,37 @@
         </div>
     </div>
 
+    <div class="exit-rating-backdrop" id="exitRatingModal" aria-hidden="true">
+        <div class="exit-rating-card" role="dialog" aria-modal="true" aria-labelledby="exitRatingTitle">
+            <h3 id="exitRatingTitle">Calificar experiencia del chat</h3>
+            <p>Antes de salir, cuentanos como te fue en general (1 a 5).</p>
+            <div class="exit-rating-buttons" id="exitRatingButtons"></div>
+            <div class="exit-rating-status" id="exitRatingStatus"></div>
+            <div class="exit-rating-actions">
+                <button id="exitRatingSkip" class="btn btn-secondary">Salir sin calificar</button>
+                <button id="exitRatingSubmit" class="btn btn-primary">Guardar</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const courseId       = {{ course_id }};
-        const conversationId = crypto.randomUUID();
+        const storageKey     = `agentChatConversation:${courseId}`;
+        let conversationId   = localStorage.getItem(storageKey) || '';
         const messagesEl     = document.getElementById('chatMessages');
         const chatInput      = document.getElementById('chatInput');
         const sendBtn        = document.getElementById('sendBtn');
         const chatEmpty      = document.getElementById('chatEmpty');
+        const resetChatBtn   = document.getElementById('resetChatBtn');
+        const backToCourseBtn = document.getElementById('backToCourseBtn');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const exitRatingModal = document.getElementById('exitRatingModal');
+        const exitRatingButtons = document.getElementById('exitRatingButtons');
+        const exitRatingStatus = document.getElementById('exitRatingStatus');
+        const exitRatingSkip = document.getElementById('exitRatingSkip');
+        const exitRatingSubmit = document.getElementById('exitRatingSubmit');
+        let exitRatingValue = null;
+        let pendingExitUrl = null;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -283,6 +414,30 @@
             if (chatEmpty) chatEmpty.style.display = 'none';
         }
 
+        function setConversationId(value) {
+            conversationId = value;
+            localStorage.setItem(storageKey, value);
+        }
+
+        function ensureConversationId(history) {
+            if (conversationId) return;
+
+            if (Array.isArray(history) && history.length > 0) {
+                const last = history[history.length - 1];
+                if (last && last.conversation_id) {
+                    setConversationId(last.conversation_id);
+                    return;
+                }
+            }
+
+            setConversationId(crypto.randomUUID());
+        }
+
+        function clearHistoryBubbles() {
+            const rows = messagesEl.querySelectorAll('.bubble-row');
+            rows.forEach(row => row.remove());
+        }
+
         function buildSourcesHtml(sources) {
             if (!Array.isArray(sources) || sources.length === 0) return '';
             const items = sources.map(s => `<li>${escapeHtml(s)}</li>`).join('');
@@ -291,6 +446,16 @@
                     <summary>📄 Fuentes consultadas (${sources.length})</summary>
                     <ul class="sources-list">${items}</ul>
                 </details>`;
+        }
+
+        function buildFeedbackHtml() {
+            return `
+                <div class="agent-feedback">
+                    <span>Valorar respuesta:</span>
+                    <button class="feedback-btn" type="button" data-value="up" aria-label="Pulgar arriba">👍</button>
+                    <button class="feedback-btn" type="button" data-value="down" aria-label="Pulgar abajo">👎</button>
+                    <span class="feedback-status" aria-live="polite"></span>
+                </div>`;
         }
 
         function appendUserBubble(text) {
@@ -302,14 +467,18 @@
             scrollToBottom();
         }
 
-        function appendAgentBubble(text, sources) {
+        function appendAgentBubble(text, sources, messageId) {
             hideEmpty();
             const row = document.createElement('div');
             row.className = 'bubble-row agent';
+            if (messageId) {
+                row.dataset.messageId = messageId;
+            }
             row.innerHTML = `
                 <div class="bubble bubble-agent">
                     <p>${escapeHtml(text)}</p>
                     ${buildSourcesHtml(sources)}
+                    ${buildFeedbackHtml()}
                 </div>`;
             messagesEl.appendChild(row);
             scrollToBottom();
@@ -344,9 +513,104 @@
             if (el) el.remove();
         }
 
+        async function parseJsonResponse(response) {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                return response.json();
+            }
+            await response.text();
+            return { error: 'Respuesta no valida del servidor.' };
+        }
+
+        function ratingStorageKey() {
+            return `agentChatSessionRating:${courseId}:${conversationId}`;
+        }
+
+        function hasSessionRating() {
+            if (!conversationId) return false;
+            return Boolean(localStorage.getItem(ratingStorageKey()));
+        }
+
+        function renderExitRatingButtons() {
+            exitRatingButtons.innerHTML = [1, 2, 3, 4, 5]
+                .map(score => `<button class="exit-rating-btn" type="button" data-score="${score}">${score}</button>`)
+                .join('');
+        }
+
+        function openExitRatingModal(nextUrl) {
+            ensureConversationId([]);
+            if (hasSessionRating()) {
+                if (nextUrl) {
+                    window.location.href = nextUrl;
+                }
+                return;
+            }
+            pendingExitUrl = nextUrl || null;
+            exitRatingValue = null;
+            exitRatingStatus.textContent = '';
+            exitRatingModal.classList.add('open');
+            exitRatingModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeExitRatingModal() {
+            pendingExitUrl = null;
+            exitRatingModal.classList.remove('open');
+            exitRatingModal.setAttribute('aria-hidden', 'true');
+        }
+
+        function resetChatSession() {
+            const confirmed = window.confirm('Se iniciara una nueva conversacion. El historial se conserva. ¿Continuar?');
+            if (!confirmed) return;
+
+            setConversationId(crypto.randomUUID());
+            clearHistoryBubbles();
+            if (chatEmpty) chatEmpty.style.display = '';
+            chatInput.focus();
+        }
+
+        async function loadHistory() {
+            let url = `/api/agent/chat/history/${courseId}?limit=10`;
+
+            if (conversationId) {
+                url += `&conversation_id=${encodeURIComponent(conversationId)}`;
+            }
+
+            try {
+                const response = await fetch(url);
+                const history = await response.json();
+
+                clearHistoryBubbles();
+                ensureConversationId(history);
+
+                if (!response.ok) {
+                    appendErrorBubble(`Error: ${history.error || 'No se pudo cargar el historial'}`);
+                    return;
+                }
+
+                if (!Array.isArray(history) || history.length === 0) {
+                    if (chatEmpty) chatEmpty.style.display = '';
+                    return;
+                }
+
+                history.forEach(entry => {
+                    if (entry.sender_type === 'profesor') {
+                        appendUserBubble(entry.message_text);
+                    } else {
+                        appendAgentBubble(entry.message_text, [], entry.id);
+                    }
+                });
+            } catch (error) {
+                clearHistoryBubbles();
+                ensureConversationId([]);
+                appendErrorBubble(`Error de conexion: ${escapeHtml(error.message)}`);
+            }
+        }
+
         async function sendMessage() {
             const text = chatInput.value.trim();
             if (!text) return;
+
+            ensureConversationId([]);
 
             chatInput.value    = '';
             chatInput.disabled = true;
@@ -366,13 +630,13 @@
                     }),
                 });
 
-                const data = await response.json();
+                const data = await parseJsonResponse(response);
                 removeTyping();
 
                 if (!response.ok) {
                     appendErrorBubble(`Error: ${data.error || 'No se pudo obtener respuesta del agente'}`);
                 } else {
-                    appendAgentBubble(data.response, data.sources || []);
+                    appendAgentBubble(data.response, data.sources || [], data.agent_message_id);
                 }
             } catch (error) {
                 removeTyping();
@@ -392,6 +656,125 @@
             }
         });
 
+        messagesEl.addEventListener('click', async function (event) {
+            const button = event.target.closest('.feedback-btn');
+            if (!button) return;
+
+            const container = button.closest('.agent-feedback');
+            if (!container) return;
+
+            const row = button.closest('.bubble-row');
+            const messageId = row ? row.dataset.messageId : '';
+            const status = container.querySelector('.feedback-status');
+
+            if (!messageId) {
+                if (status) {
+                    status.textContent = 'No se pudo guardar el feedback.';
+                }
+                return;
+            }
+
+            const buttons = container.querySelectorAll('.feedback-btn');
+            buttons.forEach(btn => btn.classList.remove('selected'));
+            button.classList.add('selected');
+
+            try {
+                const response = await fetch('/api/agent/chat/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message_id: messageId,
+                        course_id: courseId,
+                        feedback_value: button.dataset.value,
+                    }),
+                });
+
+                const data = await parseJsonResponse(response);
+
+                if (!response.ok) {
+                    if (status) {
+                        status.textContent = data.error || 'No se pudo guardar el feedback.';
+                    }
+                    return;
+                }
+
+                if (status) {
+                    status.textContent = 'Feedback guardado.';
+                }
+            } catch (error) {
+                if (status) {
+                    status.textContent = `Error: ${error.message}`;
+                }
+            }
+        });
+
+        exitRatingButtons.addEventListener('click', function (event) {
+            const button = event.target.closest('.exit-rating-btn');
+            if (!button) return;
+
+            exitRatingValue = parseInt(button.dataset.score, 10);
+            const buttons = exitRatingButtons.querySelectorAll('.exit-rating-btn');
+            buttons.forEach(btn => btn.classList.remove('selected'));
+            button.classList.add('selected');
+        });
+
+        exitRatingSkip.addEventListener('click', function () {
+            const nextUrl = pendingExitUrl;
+            closeExitRatingModal();
+            if (nextUrl) {
+                window.location.href = nextUrl;
+            }
+        });
+
+        exitRatingSubmit.addEventListener('click', async function () {
+            if (!exitRatingValue) {
+                exitRatingStatus.textContent = 'Selecciona una calificacion.';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/agent/chat/session-rating', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        course_id: courseId,
+                        conversation_id: conversationId,
+                        rating_score: exitRatingValue,
+                    }),
+                });
+
+                const data = await parseJsonResponse(response);
+
+                if (!response.ok) {
+                    exitRatingStatus.textContent = data.error || 'No se pudo guardar la calificacion.';
+                    return;
+                }
+
+                localStorage.setItem(ratingStorageKey(), String(exitRatingValue));
+                const nextUrl = pendingExitUrl;
+                closeExitRatingModal();
+                if (nextUrl) {
+                    window.location.href = nextUrl;
+                }
+            } catch (error) {
+                exitRatingStatus.textContent = `Error: ${error.message}`;
+            }
+        });
+
+        backToCourseBtn.addEventListener('click', function (event) {
+            event.preventDefault();
+            openExitRatingModal(backToCourseBtn.href);
+        });
+
+        logoutBtn.addEventListener('click', function (event) {
+            event.preventDefault();
+            openExitRatingModal(logoutBtn.href);
+        });
+
+        resetChatBtn.addEventListener('click', resetChatSession);
+
+        renderExitRatingButtons();
+        loadHistory();
         chatInput.focus();
     </script>
 </body>
