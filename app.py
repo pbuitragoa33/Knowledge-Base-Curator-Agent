@@ -7,6 +7,7 @@
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
 from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
 import os
 import sqlite3
 import hashlib
@@ -40,6 +41,8 @@ from keyword_search import bm25_search, reciprocal_rank_fusion
 # ----------
 # En Flask
 # ----------
+
+load_dotenv(override = True)
 
 app = Flask(__name__)
 app.secret_key = 'tu_clave_secreta_segura_cambiar'
@@ -425,12 +428,58 @@ def _create_agent_traceability_tables(cursor):
                   created_at TEXT NOT NULL,
                   reviewed_at TEXT,
                   reviewed_by TEXT,
+                  feedback_text TEXT,
+                  score_manual INTEGER,
                   FOREIGN KEY(course_id) REFERENCES courses(id),
                   CHECK(
-                      (estado = 'pendiente' AND reviewed_at IS NULL AND reviewed_by IS NULL)
+                      (estado = 'pendiente' AND reviewed_at IS NULL AND reviewed_by IS NULL AND score_manual IS NULL)
                       OR
-                      (estado IN ('aprobado', 'rechazado') AND reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL AND TRIM(reviewed_by) <> '')
+                      (
+                          estado IN ('aprobado', 'rechazado')
+                          AND reviewed_at IS NOT NULL
+                          AND reviewed_by IS NOT NULL
+                          AND TRIM(reviewed_by) <> ''
+                          AND score_manual BETWEEN 1 AND 5
+                      )
                   ))''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_chat_feedback
+                 (id INTEGER PRIMARY KEY,
+                  message_id INTEGER NOT NULL,
+                  course_id INTEGER NOT NULL,
+                  conversation_id TEXT NOT NULL,
+                  feedback_value TEXT NOT NULL CHECK(feedback_value IN ('up', 'down')),
+                  feedback_by TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY(message_id) REFERENCES agent_chat_history(id),
+                  FOREIGN KEY(course_id) REFERENCES courses(id),
+                  UNIQUE(message_id, feedback_by)
+                 )''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_chat_session_ratings
+                 (id INTEGER PRIMARY KEY,
+                  course_id INTEGER NOT NULL,
+                  conversation_id TEXT NOT NULL,
+                  rating_score INTEGER NOT NULL CHECK(rating_score BETWEEN 1 AND 5),
+                  rated_by TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY(course_id) REFERENCES courses(id),
+                  UNIQUE(course_id, conversation_id, rated_by)
+                 )''')
+
+
+def _ensure_agent_suggestions_columns(cursor):
+
+    cursor.execute("PRAGMA table_info(agent_suggestions)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if 'feedback_text' not in columns:
+        cursor.execute("ALTER TABLE agent_suggestions ADD COLUMN feedback_text TEXT")
+
+    if 'score_manual' not in columns:
+        cursor.execute("ALTER TABLE agent_suggestions ADD COLUMN score_manual INTEGER")
 
 
 def _create_agent_prompts_table(cursor):
@@ -461,6 +510,22 @@ def _create_agent_traceability_indexes(cursor):
     cursor.execute(
         '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_estado_created_at
            ON agent_suggestions(course_id, estado, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_feedback_course_created_at
+           ON agent_chat_feedback(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_feedback_message_id
+           ON agent_chat_feedback(message_id)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_session_ratings_course_created_at
+           ON agent_chat_session_ratings(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_session_ratings_conversation_id
+           ON agent_chat_session_ratings(conversation_id)'''
     )
 
 
@@ -671,6 +736,7 @@ def init_db():
               user TEXT NOT NULL)''')
 
     _create_agent_traceability_tables(c)
+    _ensure_agent_suggestions_columns(c)
     _create_agent_traceability_indexes(c)
     _create_agent_prompts_table(c)
     _create_agent_prompt_indexes(c)
@@ -778,6 +844,8 @@ def save_agent_suggestion(
     estado = 'pendiente',
     conversation_id = None,
     reviewed_by = None,
+    feedback_text = None,
+    score_manual = None,
 ):
 
     """Guarda una sugerencia generada por el agente para auditoría futura."""
@@ -786,6 +854,14 @@ def save_agent_suggestion(
     normalized_estado = str(estado or 'pendiente').strip()
     normalized_reviewed_by = reviewed_by.strip() if isinstance(reviewed_by, str) else None
     normalized_reviewed_at = created_at if normalized_estado in ('aprobado', 'rechazado') and normalized_reviewed_by else None
+    normalized_feedback_text = feedback_text.strip() if isinstance(feedback_text, str) else None
+    normalized_score_manual = None
+
+    if score_manual is not None:
+        try:
+            normalized_score_manual = int(score_manual)
+        except (TypeError, ValueError):
+            normalized_score_manual = None
     con = get_db_connection()
     c = con.cursor()
 
@@ -794,8 +870,8 @@ def save_agent_suggestion(
         c.execute(
             '''INSERT INTO agent_suggestions
                (course_id, conversation_id, tipo, input_context, razonamiento,
-                evidencia_ids, estado, created_at, reviewed_at, reviewed_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                evidencia_ids, estado, created_at, reviewed_at, reviewed_by, feedback_text, score_manual)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 int(course_id),
                 str(conversation_id or '').strip() or None,
@@ -807,6 +883,8 @@ def save_agent_suggestion(
                 created_at,
                 normalized_reviewed_at,
                 normalized_reviewed_by,
+                normalized_feedback_text,
+                normalized_score_manual,
             )
         )
         con.commit()
@@ -872,6 +950,61 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
     return history
 
 
+def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10):
+
+    """Lista los ultimos mensajes del historial del agente para un curso."""
+
+    normalized_limit = max(1, int(limit))
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        if conversation_id:
+
+            c.execute(
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                   FROM agent_chat_history
+                   WHERE course_id = ? AND conversation_id = ?
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT ?''',
+                (int(course_id), str(conversation_id).strip(), normalized_limit)
+            )
+
+        else:
+
+            c.execute(
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                   FROM agent_chat_history
+                   WHERE course_id = ?
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT ?''',
+                (int(course_id), normalized_limit)
+            )
+
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    history = []
+
+    for row in reversed(rows):
+
+        history.append({
+            'id': row[0],
+            'course_id': row[1],
+            'conversation_id': row[2],
+            'sender_type': row[3],
+            'sender_username': row[4],
+            'message_text': row[5],
+            'created_at': row[6],
+        })
+
+    return history
+
+
 def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
 
     """Lista sugerencias de un curso con filtros opcionales."""
@@ -898,7 +1031,8 @@ def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
 
         c.execute(
             f'''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
-                       evidencia_ids, estado, created_at, reviewed_at, reviewed_by
+                       evidencia_ids, estado, created_at, reviewed_at, reviewed_by,
+                       feedback_text, score_manual
                 FROM agent_suggestions
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY created_at DESC, id DESC
@@ -928,17 +1062,70 @@ def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
             'created_at': row[8],
             'reviewed_at': row[9],
             'reviewed_by': row[10],
+            'feedback_text': row[11],
+            'score_manual': row[12],
         })
 
     return suggestions
 
 
-def update_agent_suggestion_status(suggestion_id, estado, reviewed_by):
+def list_agent_suggestions_history(course_id, limit = 100):
+
+    """Lista sugerencias aprobadas o rechazadas de un curso."""
+
+    normalized_limit = max(1, int(limit))
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                      evidencia_ids, estado, created_at, reviewed_at, reviewed_by,
+                      feedback_text, score_manual
+               FROM agent_suggestions
+               WHERE course_id = ? AND estado IN ('aprobado', 'rechazado')
+               ORDER BY reviewed_at DESC, id DESC
+               LIMIT ?''',
+            (int(course_id), normalized_limit)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    suggestions = []
+
+    for row in rows:
+
+        suggestions.append({
+            'id': row[0],
+            'course_id': row[1],
+            'conversation_id': row[2],
+            'tipo': row[3],
+            'input_context': row[4],
+            'razonamiento': row[5],
+            'evidencia_ids': _deserialize_evidence_ids(row[6]),
+            'estado': row[7],
+            'created_at': row[8],
+            'reviewed_at': row[9],
+            'reviewed_by': row[10],
+            'feedback_text': row[11],
+            'score_manual': row[12],
+        })
+
+    return suggestions
+
+
+def update_agent_suggestion_status(suggestion_id, estado, reviewed_by, score_manual, feedback_text = None):
 
     """Actualiza el estado final de una sugerencia revisada por una persona."""
 
     reviewed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     normalized_reviewed_by = reviewed_by.strip() if isinstance(reviewed_by, str) else None
+    normalized_feedback_text = feedback_text.strip() if isinstance(feedback_text, str) and feedback_text.strip() else None
+    normalized_score_manual = int(score_manual) if score_manual is not None else None
     con = get_db_connection()
     c = con.cursor()
 
@@ -946,17 +1133,138 @@ def update_agent_suggestion_status(suggestion_id, estado, reviewed_by):
 
         c.execute(
             '''UPDATE agent_suggestions
-               SET estado = ?, reviewed_at = ?, reviewed_by = ?
+               SET estado = ?, reviewed_at = ?, reviewed_by = ?, feedback_text = ?, score_manual = ?
                WHERE id = ?''',
             (
                 str(estado or '').strip(),
                 reviewed_at,
                 normalized_reviewed_by,
+                normalized_feedback_text,
+                normalized_score_manual,
                 int(suggestion_id),
             )
         )
         con.commit()
         return c.rowcount > 0
+
+    finally:
+
+        con.close()
+
+
+def upsert_agent_chat_feedback(course_id, message_id, feedback_value, feedback_by):
+
+    """Guarda o actualiza el feedback de una respuesta del agente."""
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_feedback_value = str(feedback_value or '').strip().lower()
+    normalized_feedback_by = feedback_by.strip() if isinstance(feedback_by, str) else None
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT course_id, conversation_id, sender_type
+               FROM agent_chat_history
+               WHERE id = ?''',
+            (int(message_id),)
+        )
+        row = c.fetchone()
+
+        if not row or row[0] != int(course_id):
+            return False, 'not_found'
+
+        if row[2] != 'agente':
+            return False, 'not_agent'
+
+        conversation_id = str(row[1] or '').strip()
+
+        c.execute(
+            '''SELECT id
+               FROM agent_chat_feedback
+               WHERE message_id = ? AND feedback_by = ?''',
+            (int(message_id), normalized_feedback_by)
+        )
+        existing = c.fetchone()
+
+        if existing:
+            c.execute(
+                '''UPDATE agent_chat_feedback
+                   SET feedback_value = ?, updated_at = ?
+                   WHERE id = ?''',
+                (normalized_feedback_value, created_at, int(existing[0]))
+            )
+        else:
+            c.execute(
+                '''INSERT INTO agent_chat_feedback
+                   (message_id, course_id, conversation_id, feedback_value,
+                    feedback_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    int(message_id),
+                    int(course_id),
+                    conversation_id,
+                    normalized_feedback_value,
+                    normalized_feedback_by,
+                    created_at,
+                    created_at,
+                )
+            )
+
+        con.commit()
+        return True, None
+
+    finally:
+
+        con.close()
+
+
+def upsert_agent_chat_session_rating(course_id, conversation_id, rating_score, rated_by):
+
+    """Guarda o actualiza la calificacion general de una conversacion."""
+
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    normalized_rated_by = rated_by.strip() if isinstance(rated_by, str) else None
+    normalized_conversation_id = str(conversation_id or '').strip()
+    normalized_rating = int(rating_score) if rating_score is not None else None
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT id
+               FROM agent_chat_session_ratings
+               WHERE course_id = ? AND conversation_id = ? AND rated_by = ?''',
+            (int(course_id), normalized_conversation_id, normalized_rated_by)
+        )
+        existing = c.fetchone()
+
+        if existing:
+            c.execute(
+                '''UPDATE agent_chat_session_ratings
+                   SET rating_score = ?, updated_at = ?
+                   WHERE id = ?''',
+                (normalized_rating, created_at, int(existing[0]))
+            )
+        else:
+            c.execute(
+                '''INSERT INTO agent_chat_session_ratings
+                   (course_id, conversation_id, rating_score, rated_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (
+                    int(course_id),
+                    normalized_conversation_id,
+                    normalized_rating,
+                    normalized_rated_by,
+                    created_at,
+                    created_at,
+                )
+            )
+
+        con.commit()
+        return True, None
 
     finally:
 
@@ -3191,6 +3499,28 @@ def chat_page(course):
     return render_template('chat.html', course=course, course_id=course_id)
 
 
+@app.route('/api/agent/chat/history/<int:course_id>', methods=['GET'])
+@admin_required
+def get_agent_chat_history(course_id):
+    """Retorna los ultimos mensajes del historial del chat de un curso."""
+
+    limit_raw = request.args.get('limit', 10)
+    conversation_id = str(request.args.get('conversation_id', '') or '').strip()
+
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    normalized_limit = min(max(1, limit), 50)
+    history = list_recent_agent_chat_history(
+        course_id,
+        conversation_id = conversation_id or None,
+        limit = normalized_limit,
+    )
+    return jsonify(history), 200
+
+
 # HITL Dashboard - Sugerencias del Agente
 
 @app.route('/api/agent/suggestions', methods=['GET'])
@@ -3212,6 +3542,23 @@ def get_agent_suggestions():
     return jsonify(suggestions), 200
 
 
+@app.route('/api/agent/suggestions/history/<int:course_id>', methods=['GET'])
+@admin_required
+def get_agent_suggestions_history(course_id):
+    """Lista sugerencias aprobadas o rechazadas del agente para un curso."""
+
+    limit_raw = request.args.get('limit', 100)
+
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    normalized_limit = min(max(1, limit), 200)
+    suggestions = list_agent_suggestions_history(course_id, limit = normalized_limit)
+    return jsonify(suggestions), 200
+
+
 @app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
 @admin_required
 def resolve_agent_suggestion(suggestion_id):
@@ -3219,17 +3566,110 @@ def resolve_agent_suggestion(suggestion_id):
 
     data = request.get_json(silent=True) or {}
     estado = str(data.get('estado', '')).strip()
+    feedback_text = str(data.get('feedback_text', '') or '').strip()
+    score_raw = data.get('score_manual')
 
     if estado not in ('aprobado', 'rechazado'):
         return jsonify({'error': "El campo 'estado' debe ser 'aprobado' o 'rechazado'"}), 400
 
+    try:
+        score_manual = int(score_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El campo 'score_manual' debe ser un numero entero"}), 400
+
+    if score_manual < 1 or score_manual > 5:
+        return jsonify({'error': "El campo 'score_manual' debe estar entre 1 y 5"}), 400
+
+    if estado == 'rechazado' and not feedback_text:
+        return jsonify({'error': "El campo 'feedback_text' es requerido al rechazar"}), 400
+
     reviewed_by = session['user']
-    updated = update_agent_suggestion_status(suggestion_id, estado, reviewed_by)
+    updated = update_agent_suggestion_status(
+        suggestion_id,
+        estado,
+        reviewed_by,
+        score_manual,
+        feedback_text,
+    )
 
     if not updated:
         return jsonify({'error': 'Sugerencia no encontrada'}), 404
 
     return jsonify({'message': f'Sugerencia {suggestion_id} marcada como {estado}'}), 200
+
+
+@app.route('/api/agent/chat/feedback', methods=['POST'])
+@admin_required
+def save_agent_chat_feedback():
+    """Guarda feedback del usuario sobre una respuesta del agente."""
+
+    data = request.get_json(silent=True) or {}
+    message_id_raw = data.get('message_id')
+    course_id_raw = data.get('course_id')
+    feedback_value = str(data.get('feedback_value', '') or '').strip().lower()
+
+    if message_id_raw is None or course_id_raw is None:
+        return jsonify({'error': "Los campos 'message_id' y 'course_id' son requeridos"}), 400
+
+    try:
+        message_id = int(message_id_raw)
+        course_id = int(course_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "Los campos 'message_id' y 'course_id' deben ser enteros"}), 400
+
+    if feedback_value not in ('up', 'down'):
+        return jsonify({'error': "El campo 'feedback_value' debe ser 'up' o 'down'"}), 400
+
+    feedback_by = session['user']
+    updated, reason = upsert_agent_chat_feedback(
+        course_id,
+        message_id,
+        feedback_value,
+        feedback_by,
+    )
+
+    if not updated:
+        if reason == 'not_agent':
+            return jsonify({'error': 'Solo se permite feedback para mensajes del agente'}), 400
+        return jsonify({'error': 'Mensaje no encontrado'}), 404
+
+    return jsonify({'message': 'Feedback registrado'}), 200
+
+
+@app.route('/api/agent/chat/session-rating', methods=['POST'])
+@admin_required
+def save_agent_chat_session_rating():
+    """Guarda una calificacion (1-5) general de la conversacion."""
+
+    data = request.get_json(silent=True) or {}
+    course_id_raw = data.get('course_id')
+    conversation_id = str(data.get('conversation_id', '') or '').strip()
+    rating_raw = data.get('rating_score')
+
+    if course_id_raw is None or not conversation_id:
+        return jsonify({'error': "Los campos 'course_id' y 'conversation_id' son requeridos"}), 400
+
+    try:
+        course_id = int(course_id_raw)
+        rating_score = int(rating_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "Los campos 'course_id' y 'rating_score' deben ser enteros"}), 400
+
+    if rating_score < 1 or rating_score > 5:
+        return jsonify({'error': "El campo 'rating_score' debe estar entre 1 y 5"}), 400
+
+    rated_by = session['user']
+    updated, _ = upsert_agent_chat_session_rating(
+        course_id,
+        conversation_id,
+        rating_score,
+        rated_by,
+    )
+
+    if not updated:
+        return jsonify({'error': 'No se pudo registrar la calificacion'}), 500
+
+    return jsonify({'message': 'Calificacion registrada'}), 200
 
 
 # ── Proveedor de embeddings reutilizable para el endpoint de chat ──────────
@@ -3314,11 +3754,12 @@ def agent_chat():
             'Lo siento, tu pregunta no parece estar relacionada con los documentos del curso. '
             'Por favor, reformúlala o consulta sobre los temas cubiertos en los materiales disponibles.'
         )
-        save_agent_chat_message(course_id, conversation_id, 'agente', off_topic_msg)
+        agent_message_id = save_agent_chat_message(course_id, conversation_id, 'agente', off_topic_msg)
         return jsonify({
             'response': off_topic_msg,
             'sources': [],
             'conversation_id': conversation_id,
+            'agent_message_id': agent_message_id,
         }), 200
 
     # ── Construir historial de mensajes para el LLM ────────────────────────
@@ -3389,12 +3830,13 @@ def agent_chat():
         return jsonify({'error': f'Error al procesar la respuesta del agente: {str(e)}'}), 500
 
     # Guardar respuesta del agente
-    save_agent_chat_message(course_id, conversation_id, 'agente', final_text)
+    agent_message_id = save_agent_chat_message(course_id, conversation_id, 'agente', final_text)
 
     return jsonify({
         'response': final_text,
         'sources': sources,
         'conversation_id': conversation_id,
+        'agent_message_id': agent_message_id,
     }), 200
 
 
