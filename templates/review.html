@@ -82,6 +82,120 @@
         .suggestion-card {
             border-left: 4px solid #667eea;
         }
+
+        /* Historial */
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .history-container {
+            margin-top: 16px;
+            display: none;
+        }
+
+        .history-container.visible {
+            display: block;
+        }
+
+        .history-table-wrap {
+            overflow-x: auto;
+        }
+
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.92em;
+        }
+
+        .history-table th,
+        .history-table td {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+
+        .history-status {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 700;
+            color: white;
+        }
+
+        .history-status.aprobado { background: #28a745; }
+        .history-status.rechazado { background: #dc3545; }
+
+        /* Modal de feedback */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 50;
+        }
+
+        .modal-backdrop.open {
+            display: flex;
+        }
+
+        .modal-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px 22px;
+            width: 100%;
+            max-width: 520px;
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+        }
+
+        .modal-card h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .modal-card p {
+            margin: 0 0 16px 0;
+            color: #666;
+        }
+
+        .modal-card label {
+            display: block;
+            font-weight: 600;
+            margin-top: 12px;
+            margin-bottom: 6px;
+        }
+
+        .modal-select,
+        .modal-card textarea {
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 0.95em;
+        }
+
+        .modal-card textarea {
+            resize: vertical;
+        }
+
+        .feedback-hint {
+            font-size: 0.85em;
+            color: #888;
+            margin-top: 6px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 18px;
+        }
     </style>
 </head>
 <body>
@@ -104,10 +218,62 @@
                 <p class="loading">Cargando sugerencias...</p>
             </div>
         </div>
+
+        <div class="card">
+            <div class="history-header">
+                <h2>Historial de Sugerencias</h2>
+                <button id="toggleHistoryBtn" class="btn btn-secondary btn-small">Ver Historial</button>
+            </div>
+            <p class="subtitle-sm">
+                Consulta las sugerencias ya gestionadas (aprobadas o rechazadas).
+            </p>
+            <div id="historyContainer" class="history-container"></div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="feedbackModal" aria-hidden="true">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
+            <h3 id="feedbackTitle">Calificar sugerencia</h3>
+            <p id="feedbackSubtitle">Selecciona una calificacion y guarda el feedback.</p>
+
+            <label for="feedbackScore">Calificacion (1 a 5)</label>
+            <select id="feedbackScore" class="modal-select">
+                <option value="">Selecciona una calificacion</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+            </select>
+
+            <div id="feedbackGroup">
+                <label for="feedbackText" id="feedbackLabel">Feedback</label>
+                <textarea id="feedbackText" rows="4" placeholder="Escribe el feedback para mejorar el agente..."></textarea>
+                <div class="feedback-hint" id="feedbackHint">Este comentario se guardara para mejorar el agente.</div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="modalCancel" class="btn btn-secondary">Cancelar</button>
+                <button id="modalSubmit" class="btn btn-primary">Guardar</button>
+            </div>
+        </div>
     </div>
 
     <script>
         const courseId = {{ course_id }};
+        const historyContainer = document.getElementById('historyContainer');
+        const toggleHistoryBtn = document.getElementById('toggleHistoryBtn');
+        const feedbackModal = document.getElementById('feedbackModal');
+        const feedbackTitle = document.getElementById('feedbackTitle');
+        const feedbackSubtitle = document.getElementById('feedbackSubtitle');
+        const feedbackScore = document.getElementById('feedbackScore');
+        const feedbackGroup = document.getElementById('feedbackGroup');
+        const feedbackText = document.getElementById('feedbackText');
+        const modalCancel = document.getElementById('modalCancel');
+        const modalSubmit = document.getElementById('modalSubmit');
+        let pendingResolution = null;
+        let historyLoaded = false;
+        let historyVisible = false;
 
         const TIPO_CONFIG = {
             'redundancia':     { label: 'Redundancia',      color: '#fd7e14' },
@@ -155,8 +321,8 @@
                         </div>
                     </div>
                     <div class="suggestion-actions">
-                        <button class="btn btn-success" onclick="resolve(${s.id}, 'aprobado', this)">✓ Aprobar</button>
-                        <button class="btn btn-danger"  onclick="resolve(${s.id}, 'rechazado', this)">✕ Rechazar</button>
+                        <button class="btn btn-success" onclick="openResolveModal(${s.id}, 'aprobado', this)">✓ Aprobar</button>
+                        <button class="btn btn-danger"  onclick="openResolveModal(${s.id}, 'rechazado', this)">✕ Rechazar</button>
                     </div>
                 </div>
             `;
@@ -189,16 +355,137 @@
             }
         }
 
-        async function resolve(suggestionId, estado, button) {
+        function buildHistoryRow(s) {
+            const tipoLabel = (TIPO_CONFIG[s.tipo] && TIPO_CONFIG[s.tipo].label) || escapeHtml(s.tipo);
+            const estadoLabel = s.estado === 'aprobado' ? 'Aprobado' : 'Rechazado';
+            const reviewedAt = s.reviewed_at || s.created_at;
+            const score = s.score_manual != null ? s.score_manual : '-';
+            const feedback = s.feedback_text ? escapeHtml(s.feedback_text) : '-';
+
+            return `
+                <tr>
+                    <td><span class="history-status ${escapeHtml(s.estado)}">${estadoLabel}</span></td>
+                    <td>${escapeHtml(tipoLabel)}</td>
+                    <td>${escapeHtml(s.input_context)}</td>
+                    <td>${escapeHtml(s.razonamiento)}</td>
+                    <td>${escapeHtml(score)}</td>
+                    <td>${feedback}</td>
+                    <td>${escapeHtml(reviewedAt)}</td>
+                </tr>
+            `;
+        }
+
+        async function loadHistory() {
+            historyContainer.innerHTML = '<p class="loading">Cargando historial...</p>';
+
+            try {
+                const response = await fetch(`/api/agent/suggestions/history/${courseId}`);
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    historyContainer.innerHTML = `<div class="error-message">Error: ${escapeHtml(err.error || 'No se pudo cargar el historial')}</div>`;
+                    return;
+                }
+
+                const suggestions = await response.json();
+
+                if (suggestions.length === 0) {
+                    historyContainer.innerHTML = '<p class="no-data">No hay sugerencias aprobadas o rechazadas.</p>';
+                    return;
+                }
+
+                historyContainer.innerHTML = `
+                    <div class="history-table-wrap">
+                        <table class="history-table">
+                            <thead>
+                                <tr>
+                                    <th>Estado</th>
+                                    <th>Tipo</th>
+                                    <th>Contexto</th>
+                                    <th>Razonamiento</th>
+                                    <th>Calificacion</th>
+                                    <th>Feedback</th>
+                                    <th>Fecha</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${suggestions.map(buildHistoryRow).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (error) {
+                historyContainer.innerHTML = `<div class="error-message">Error: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        function toggleHistory() {
+            historyVisible = !historyVisible;
+            historyContainer.classList.toggle('visible', historyVisible);
+            toggleHistoryBtn.textContent = historyVisible ? 'Ocultar Historial' : 'Ver Historial';
+
+            if (historyVisible && !historyLoaded) {
+                historyLoaded = true;
+                loadHistory();
+            }
+        }
+
+        function openResolveModal(suggestionId, estado, button) {
+            pendingResolution = { suggestionId, estado, button };
+            feedbackScore.value = '';
+            feedbackText.value = '';
+
+            if (estado === 'rechazado') {
+                feedbackTitle.textContent = 'Rechazar sugerencia';
+                feedbackSubtitle.textContent = 'Indica una calificacion y el feedback obligatorio.';
+                feedbackGroup.style.display = 'block';
+            } else {
+                feedbackTitle.textContent = 'Aprobar sugerencia';
+                feedbackSubtitle.textContent = 'Indica una calificacion para registrar la decision.';
+                feedbackGroup.style.display = 'none';
+            }
+
+            feedbackModal.classList.add('open');
+            feedbackModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeResolveModal() {
+            pendingResolution = null;
+            feedbackModal.classList.remove('open');
+            feedbackModal.setAttribute('aria-hidden', 'true');
+        }
+
+        async function submitResolution() {
+            if (!pendingResolution) return;
+
+            const { suggestionId, estado, button } = pendingResolution;
+            const scoreValue = parseInt(feedbackScore.value, 10);
+            const feedbackValue = feedbackText.value.trim();
+
+            if (Number.isNaN(scoreValue) || scoreValue < 1 || scoreValue > 5) {
+                alert('Selecciona una calificacion valida del 1 al 5.');
+                return;
+            }
+
+            if (estado === 'rechazado' && !feedbackValue) {
+                alert('El feedback es requerido al rechazar una sugerencia.');
+                return;
+            }
+
             const card = document.getElementById(`suggestion-${suggestionId}`);
-            const buttons = card.querySelectorAll('button');
+            const buttons = card ? card.querySelectorAll('button') : [];
             buttons.forEach(b => b.disabled = true);
+            if (button) button.disabled = true;
 
             try {
                 const response = await fetch(`/api/agent/suggestions/${suggestionId}/resolve`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ estado }),
+                    body: JSON.stringify({
+                        estado,
+                        score_manual: scoreValue,
+                        feedback_text: feedbackValue,
+                    }),
                 });
 
                 if (!response.ok) {
@@ -208,21 +495,37 @@
                     return;
                 }
 
-                card.style.transition = 'opacity 0.3s ease';
-                card.style.opacity = '0';
-                setTimeout(() => {
-                    card.remove();
-                    const container = document.getElementById('suggestionsContainer');
-                    if (!container.querySelector('.suggestion-card')) {
-                        container.innerHTML = '<p class="no-data">No hay sugerencias pendientes para este curso.</p>';
-                    }
-                }, 300);
+                closeResolveModal();
 
+                if (card) {
+                    card.style.transition = 'opacity 0.3s ease';
+                    card.style.opacity = '0';
+                    setTimeout(() => {
+                        card.remove();
+                        const container = document.getElementById('suggestionsContainer');
+                        if (!container.querySelector('.suggestion-card')) {
+                            container.innerHTML = '<p class="no-data">No hay sugerencias pendientes para este curso.</p>';
+                        }
+                    }, 300);
+                }
+
+                if (historyLoaded) {
+                    loadHistory();
+                }
             } catch (error) {
                 alert(`Error: ${error.message}`);
                 buttons.forEach(b => b.disabled = false);
             }
         }
+
+        toggleHistoryBtn.addEventListener('click', toggleHistory);
+        modalCancel.addEventListener('click', closeResolveModal);
+        modalSubmit.addEventListener('click', submitResolution);
+        feedbackModal.addEventListener('click', (event) => {
+            if (event.target === feedbackModal) {
+                closeResolveModal();
+            }
+        });
 
         loadSuggestions();
     </script>
