@@ -57,3 +57,28 @@ SET estado = :estado,
     feedback_text = :feedback_text,
     score_manual = :score_manual
 WHERE id = :suggestion_id;
+
+-- Guardar o actualizar feedback de respuestas del agente
+INSERT INTO agent_chat_feedback
+    (message_id, course_id, conversation_id, feedback_value, feedback_by, created_at, updated_at)
+VALUES
+    (:message_id, :course_id, :conversation_id, :feedback_value, :feedback_by, :created_at, :updated_at);
+
+UPDATE agent_chat_feedback
+SET feedback_value = :feedback_value,
+    updated_at = :updated_at
+WHERE message_id = :message_id
+  AND feedback_by = :feedback_by;
+
+-- Guardar o actualizar calificacion (1-5) general de una conversacion
+INSERT INTO agent_chat_session_ratings
+    (course_id, conversation_id, rating_score, rated_by, created_at, updated_at)
+VALUES
+    (:course_id, :conversation_id, :rating_score, :rated_by, :created_at, :updated_at);
+
+UPDATE agent_chat_session_ratings
+SET rating_score = :rating_score,
+    updated_at = :updated_at
+WHERE course_id = :course_id
+  AND conversation_id = :conversation_id
+  AND rated_by = :rated_by;
