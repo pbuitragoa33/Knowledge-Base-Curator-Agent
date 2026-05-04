@@ -434,11 +434,6 @@ __pycache__/
 
 # Archivos tempprales
 tests/
-!tests/
-tests/*
-!tests/test_issue_58.py
-tests/.tmp_validation/
-tests/__pycache__/
 
 # Entorno virtual
 kbca_venv/
