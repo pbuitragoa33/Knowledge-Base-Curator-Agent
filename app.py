@@ -5,7 +5,7 @@
 # Librerias 
 # ------------
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file, Response
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import os
@@ -1009,7 +1009,7 @@ def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
 
     """Lista sugerencias de un curso con filtros opcionales."""
 
-    normalized_limit = max(1, int(limit))
+    normalized_limit = None if limit is None else max(1, int(limit))
     where_clauses = ['course_id = ?']
     parameters = [int(course_id)]
 
@@ -1023,7 +1023,13 @@ def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
         where_clauses.append('tipo = ?')
         parameters.append(str(tipo).strip())
 
-    parameters.append(normalized_limit)
+    limit_clause = ''
+
+    if normalized_limit is not None:
+
+        limit_clause = ' LIMIT ?'
+        parameters.append(normalized_limit)
+
     con = get_db_connection()
     c = con.cursor()
 
@@ -1035,8 +1041,7 @@ def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
                        feedback_text, score_manual
                 FROM agent_suggestions
                 WHERE {' AND '.join(where_clauses)}
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?'''
+                ORDER BY created_at DESC, id DESC{limit_clause}'''
             ,
             tuple(parameters)
         )
@@ -1116,6 +1121,182 @@ def list_agent_suggestions_history(course_id, limit = 100):
         })
 
     return suggestions
+
+
+def _extract_document_id_from_evidence_id(evidence_id):
+
+    """Extrae document_id desde ids de chunk con formato upload_hash:document_id:chunk_index."""
+
+    parts = str(evidence_id or '').split(':')
+
+    if len(parts) < 3:
+
+        return None
+
+    try:
+
+        return int(parts[1])
+
+    except (TypeError, ValueError):
+
+        return None
+
+
+def _resolve_export_document_lookup(cursor, course_name, suggestions):
+
+    """Resuelve nombres de documentos citados por las evidencias de sugerencias."""
+
+    document_ids = set()
+
+    for suggestion in suggestions:
+
+        for evidence_id in suggestion.get('evidencia_ids', []):
+
+            document_id = _extract_document_id_from_evidence_id(evidence_id)
+
+            if document_id is not None:
+
+                document_ids.add(document_id)
+
+    if not document_ids:
+
+        return {}
+
+    ordered_document_ids = sorted(document_ids)
+    placeholders = ', '.join('?' for _ in ordered_document_ids)
+    cursor.execute(
+        f'''SELECT id, filename
+            FROM documents
+            WHERE course = ? AND id IN ({placeholders})''',
+        tuple([course_name] + ordered_document_ids)
+    )
+
+    return {int(row[0]): row[1] for row in cursor.fetchall()}
+
+
+def _suggestion_document_label(suggestion, document_lookup):
+
+    """Obtiene la etiqueta de documento para agrupar una sugerencia exportada."""
+
+    document_names = []
+
+    for evidence_id in suggestion.get('evidencia_ids', []):
+
+        document_id = _extract_document_id_from_evidence_id(evidence_id)
+        document_name = document_lookup.get(document_id)
+
+        if document_name and document_name not in document_names:
+
+            document_names.append(document_name)
+
+    if not document_names:
+
+        return 'Documento no identificado'
+
+    return ', '.join(document_names)
+
+
+def _format_markdown_value(value, fallback = 'No registrado.'):
+
+    """Normaliza valores libres para el reporte Markdown."""
+
+    normalized_value = str(value or '').strip()
+
+    return normalized_value if normalized_value else fallback
+
+
+def _format_evidence_for_markdown(evidence_ids):
+
+    """Formatea las evidencias como ids de chunk legibles."""
+
+    if not evidence_ids:
+
+        return 'No registrada.'
+
+    return ', '.join(f'`{evidence_id}`' for evidence_id in evidence_ids)
+
+
+def build_action_plan_markdown(course, suggestions, document_lookup, generated_at):
+
+    """Construye el reporte Markdown de sugerencias aprobadas."""
+
+    tipo_labels = {
+        'redundancia': 'Redundancia',
+        'deactualizacion': 'Desactualización',
+        'conflicto': 'Conflicto',
+    }
+    grouped_suggestions = {}
+
+    for suggestion in suggestions:
+
+        document_label = _suggestion_document_label(suggestion, document_lookup)
+        grouped_suggestions.setdefault(document_label, []).append(suggestion)
+
+    course_name = course['name']
+    course_code = course['course_code']
+    lines = [
+        '# Plan de Acción de Curaduría',
+        '',
+        f'- Curso: {course_name}',
+        f'- Código del curso: {course_code}',
+        f'- Fecha de generación: {generated_at}',
+        f'- Total de sugerencias aprobadas: {len(suggestions)}',
+        '',
+    ]
+
+    if not suggestions:
+
+        lines.extend([
+            'No hay sugerencias aprobadas para exportar.',
+            '',
+        ])
+        return '\n'.join(lines)
+
+    for document_label, document_suggestions in grouped_suggestions.items():
+
+        lines.extend([
+            f'## {document_label}',
+            '',
+        ])
+
+        for index, suggestion in enumerate(document_suggestions, start = 1):
+
+            tipo = tipo_labels.get(
+                suggestion.get('tipo'),
+                _format_markdown_value(suggestion.get('tipo'), 'Sin tipo')
+            )
+            lines.extend([
+                f'### Acción {index}',
+                '',
+                f'- Tipo: {tipo}',
+                f'- Aprobada por: {_format_markdown_value(suggestion.get("reviewed_by"))}',
+                f'- Fecha de aprobación: {_format_markdown_value(suggestion.get("reviewed_at"))}',
+                '',
+                '**Contexto / acción sugerida**',
+                '',
+                _format_markdown_value(suggestion.get('input_context')),
+                '',
+                '**Razón**',
+                '',
+                _format_markdown_value(suggestion.get('razonamiento')),
+                '',
+                '**Evidencia**',
+                '',
+                _format_evidence_for_markdown(suggestion.get('evidencia_ids', [])),
+                '',
+            ])
+
+    return '\n'.join(lines)
+
+
+def _build_action_plan_filename(course_code, course_id):
+
+    """Construye un nombre seguro para el archivo de exportación."""
+
+    normalized_code = normalize_course_code(course_code) or f'CURSO-{course_id}'
+    filename = secure_filename(f'plan_accion_{normalized_code}.md')
+
+    return filename or f'plan_accion_curso_{course_id}.md'
 
 
 def update_agent_suggestion_status(suggestion_id, estado, reviewed_by, score_manual, feedback_text = None):
@@ -3557,6 +3738,58 @@ def get_agent_suggestions_history(course_id):
     normalized_limit = min(max(1, limit), 200)
     suggestions = list_agent_suggestions_history(course_id, limit = normalized_limit)
     return jsonify(suggestions), 200
+
+
+@app.route('/api/agent/export-suggestions/<int:course_id>', methods=['GET'])
+@admin_required
+def export_agent_suggestions(course_id):
+    """Exporta un plan de acción Markdown con sugerencias aprobadas del curso."""
+
+    user = session.get('user')
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute('SELECT id, name, course_code FROM courses WHERE id = ?', (int(course_id),))
+        course_row = c.fetchone()
+
+        if not course_row:
+
+            return jsonify({'error': 'Curso no encontrado'}), 404
+
+        course = {
+            'id': int(course_row[0]),
+            'name': course_row[1],
+            'course_code': course_row[2],
+        }
+        c.execute('SELECT role FROM users WHERE username = ?', (user,))
+        role_row = c.fetchone()
+        role = role_row[0] if role_row else None
+
+        if role == 'profesor' and not professor_can_manage_course(c, course['name'], user):
+
+            return jsonify({'error': 'No es profesor de este curso'}), 403
+
+        suggestions = list_agent_suggestions(course_id, estado='aprobado', limit=None)
+        document_lookup = _resolve_export_document_lookup(c, course['name'], suggestions)
+
+    finally:
+
+        con.close()
+
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    markdown_content = build_action_plan_markdown(
+        course,
+        suggestions,
+        document_lookup,
+        generated_at,
+    )
+    filename = _build_action_plan_filename(course['course_code'], course['id'])
+    response = Response(markdown_content, content_type='text/markdown; charset=utf-8')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+
+    return response
 
 
 @app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
