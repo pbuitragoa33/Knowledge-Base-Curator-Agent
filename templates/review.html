@@ -82,6 +82,34 @@
         .suggestion-card {
             border-left: 4px solid #667eea;
         }
+
+        .review-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .review-card-header h2 {
+            margin-bottom: 8px;
+        }
+
+        .review-card-copy {
+            flex: 1 1 360px;
+        }
+
+        .review-card-actions {
+            display: flex;
+            align-items: center;
+        }
+
+        .review-card-actions .btn {
+            width: auto;
+            margin-top: 0;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -96,10 +124,17 @@
         </div>
 
         <div class="card">
-            <h2>Sugerencias Pendientes — {{ course }}</h2>
-            <p class="subtitle-sm">
-                Revisa cada sugerencia generada por el agente de curaduría y decide si aprobarla o rechazarla.
-            </p>
+            <div class="review-card-header">
+                <div class="review-card-copy">
+                    <h2>Sugerencias Pendientes — {{ course }}</h2>
+                    <p class="subtitle-sm">
+                        Revisa cada sugerencia generada por el agente de curaduría y decide si aprobarla o rechazarla.
+                    </p>
+                </div>
+                <div class="review-card-actions">
+                    <a href="{{ url_for('export_agent_suggestions', course_id=course_id) }}" class="btn btn-success btn-small">Exportar Plan de Acción</a>
+                </div>
+            </div>
             <div id="suggestionsContainer">
                 <p class="loading">Cargando sugerencias...</p>
             </div>
