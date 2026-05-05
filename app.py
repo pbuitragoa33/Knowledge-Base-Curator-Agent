@@ -35,6 +35,7 @@ from vector_store import (
     query_course_embeddings,
     get_course_embeddings_by_metadata,
     upsert_course_embeddings,
+    delete_chunks,
 )
 from keyword_search import bm25_search, reciprocal_rank_fusion
 
@@ -3795,7 +3796,11 @@ def export_agent_suggestions(course_id):
 @app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
 @admin_required
 def resolve_agent_suggestion(suggestion_id):
-    """Aprueba o rechaza una sugerencia del agente."""
+    """Aprueba o rechaza una sugerencia del agente.
+    
+    Si la sugerencia es aprobada y es de tipo redundancia,
+    elimina automáticamente los chunks de la base vectorial.
+    """
 
     data = request.get_json(silent=True) or {}
     estado = str(data.get('estado', '')).strip()
@@ -3817,6 +3822,32 @@ def resolve_agent_suggestion(suggestion_id):
         return jsonify({'error': "El campo 'feedback_text' es requerido al rechazar"}), 400
 
     reviewed_by = session['user']
+
+    # Obtener datos de la sugerencia antes de actualizar
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+        c.execute(
+            '''SELECT s.tipo, s.evidencia_ids, co.course_code
+               FROM agent_suggestions s
+               JOIN courses co ON co.id = s.course_id
+               WHERE s.id = ?''',
+            (suggestion_id,)
+        )
+        suggestion_row = c.fetchone()
+
+    finally:
+        con.close()
+
+    if not suggestion_row:
+        return jsonify({'error': 'Sugerencia no encontrada'}), 404
+
+    tipo = str(suggestion_row[0] or '').strip().lower()
+    evidencia_ids_raw = suggestion_row[1]
+    course_code = suggestion_row[2]
+
+    # Actualizar estado en la base de datos
     updated = update_agent_suggestion_status(
         suggestion_id,
         estado,
@@ -3828,45 +3859,50 @@ def resolve_agent_suggestion(suggestion_id):
     if not updated:
         return jsonify({'error': 'Sugerencia no encontrada'}), 404
 
-    return jsonify({'message': f'Sugerencia {suggestion_id} marcada como {estado}'}), 200
+    # Si es aprobada y es de tipo redundancia, eliminar chunks de la base vectorial
+    vector_deletion_result = None
 
+    if estado == 'aprobado' and tipo in ('redundancia', 'eliminacion'):
 
-@app.route('/api/agent/chat/feedback', methods=['POST'])
-@admin_required
-def save_agent_chat_feedback():
-    """Guarda feedback del usuario sobre una respuesta del agente."""
+        evidencia_ids = _deserialize_evidence_ids(evidencia_ids_raw)
 
-    data = request.get_json(silent=True) or {}
-    message_id_raw = data.get('message_id')
-    course_id_raw = data.get('course_id')
-    feedback_value = str(data.get('feedback_value', '') or '').strip().lower()
+        if evidencia_ids:
+            try:
+                vector_deletion_result = delete_chunks(evidencia_ids, course_code)
 
-    if message_id_raw is None or course_id_raw is None:
-        return jsonify({'error': "Los campos 'message_id' y 'course_id' son requeridos"}), 400
+                if vector_deletion_result.get('not_found'):
+                    app.logger.warning(
+                        'Chunks no encontrados en base vectorial al aprobar sugerencia %d: %s',
+                        suggestion_id,
+                        vector_deletion_result['not_found'],
+                    )
 
-    try:
-        message_id = int(message_id_raw)
-        course_id = int(course_id_raw)
-    except (TypeError, ValueError):
-        return jsonify({'error': "Los campos 'message_id' y 'course_id' deben ser enteros"}), 400
+                if vector_deletion_result.get('errors'):
+                    app.logger.warning(
+                        'Errores al eliminar chunks de base vectorial para sugerencia %d: %s',
+                        suggestion_id,
+                        vector_deletion_result['errors'],
+                    )
 
-    if feedback_value not in ('up', 'down'):
-        return jsonify({'error': "El campo 'feedback_value' debe ser 'up' o 'down'"}), 400
+            except VectorStoreError as e:
+                # No bloqueamos la respuesta, solo dejamos el log
+                app.logger.warning(
+                    'Error al eliminar chunks vectoriales para sugerencia %d: %s',
+                    suggestion_id,
+                    str(e),
+                )
 
-    feedback_by = session['user']
-    updated, reason = upsert_agent_chat_feedback(
-        course_id,
-        message_id,
-        feedback_value,
-        feedback_by,
-    )
+    response = {
+        'message': f'Sugerencia {suggestion_id} marcada como {estado}',
+    }
 
-    if not updated:
-        if reason == 'not_agent':
-            return jsonify({'error': 'Solo se permite feedback para mensajes del agente'}), 400
-        return jsonify({'error': 'Mensaje no encontrado'}), 404
+    if vector_deletion_result:
+        response['vector_deletion'] = {
+            'deleted': vector_deletion_result.get('deleted', 0),
+            'not_found': vector_deletion_result.get('not_found', []),
+        }
 
-    return jsonify({'message': 'Feedback registrado'}), 200
+    return jsonify(response), 200
 
 
 @app.route('/api/agent/chat/session-rating', methods=['POST'])
