@@ -233,6 +233,15 @@ Se agregaron dos tablas para soportar auditoría y seguimiento Human-in-the-Loop
   - `estado` solo permite `pendiente`, `aprobado` o `rechazado`.
   - `evidencia_ids` se guarda como un arreglo JSON serializado con ids de chunks relacionados.
   - `razonamiento` almacena una justificación explicable para revisión humana, no reasoning oculto del modelo.
+  - Al resolver una sugerencia se registran `score_manual` (1-5) y `feedback_text` (si es rechazo).
+
+- `agent_chat_feedback`
+  - Registra feedback rapido por respuesta del agente (`up`/`down`).
+  - Unico por `message_id` + `feedback_by`.
+
+- `agent_chat_session_ratings`
+  - Registra la calificación general (1-5) por conversacion.
+  - Unico por `course_id` + `conversation_id` + `rated_by`.
 
 Los scripts SQL equivalentes se encuentran en `sql/001_agent_traceability_schema.sql` y `sql/002_agent_traceability_operations.sql`.
 
@@ -287,6 +296,9 @@ El flujo HITL quedó integrado en `app.py` y en la interfaz:
 - Persistencia de mensajes en `agent_chat_history` por `course_id` + `conversation_id`.
 - Persistencia de sugerencias en `agent_suggestions` con estado inicial `pendiente`.
 - Resolución humana de sugerencias con transición a `aprobado` o `rechazado` y registro de `reviewed_by` / `reviewed_at`.
+- Captura de `score_manual` (1-5) y `feedback_text` al rechazar sugerencias.
+- Feedback por respuesta del agente con pulgar arriba/abajo.
+- Calificación general de la conversacion al salir del chat (1-5).
 - Rutas de vista dedicadas: `/chat/<course>` y `/review/<course>` para interacción y revisión.
 
 ## Formatos de Archivo Soportados
@@ -382,8 +394,12 @@ El flujo HITL quedó integrado en `app.py` y en la interfaz:
 
 ### Agente de Curaduría (HITL)
 - `GET /api/agent/suggestions?course_id=<id>` - Lista sugerencias pendientes del curso.
+- `GET /api/agent/suggestions/history/<course_id>` - Lista sugerencias aprobadas/rechazadas del curso.
 - `POST /api/agent/suggestions/<int:suggestion_id>/resolve` - Marca sugerencia como `aprobado` o `rechazado`.
+- `GET /api/agent/chat/history/<course_id>` - Retorna el historial reciente de chat del curso.
 - `POST /api/agent/chat` - Ejecuta chat contextual con tool-calling y retorna respuesta + fuentes.
+- `POST /api/agent/chat/feedback` - Registra feedback rapido (👍/👎) por respuesta del agente.
+- `POST /api/agent/chat/session-rating` - Registra la calificación general (1-5) de la conversación.
 
 
 ### Sincronización de Vector Store en Eliminación y Versionado
@@ -448,8 +464,9 @@ Consulta de métricas:
   - Fecha de subida
 - Para chunks largos se incorporó interacción "Ver más / Ver menos".
 - En la vista del curso (`upload.html`) se añadió acceso directo a "Chatear con el Agente" para admin/profesor.
-- La interfaz `chat.html` implementa conversación por curso con `conversation_id`, indicador de escritura, manejo de errores y despliegue colapsable de fuentes.
-- La interfaz `review.html` implementa tarjetas de sugerencias pendientes con acciones de aprobación/rechazo en línea.
+- La interfaz `chat.html` implementa conversación por curso con `conversation_id`, indicador de escritura, manejo de errores, historial cargado al abrir la vista y despliegue colapsable de fuentes.
+- El chat incluye feedback por respuesta (👍/👎), reinicio de conversación sin borrar historial y calificación general (1-5) al salir.
+- La interfaz `review.html` implementa tarjetas de sugerencias pendientes, modal de resolución con score/feedback y vista de historial de sugerencias.
 
 ### Pre-commits y Protección de Información
 
