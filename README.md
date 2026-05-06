@@ -35,6 +35,8 @@ Los documentos son **globales por curso** (no dependen de la sesión), por lo qu
 * Observabilidad del agente con logs estructurados por nodo, prompt, respuesta LLM, tools y errores.
 * Dashboard HITL para revisión humana de sugerencias (`aprobar` / `rechazar`) y trazabilidad por conversación.
 * Interfaz de chat dedicada para profesores/admin con listado de fuentes consultadas por respuesta.
+* Exportación de Plan de Acción (Markdown) con sugerencias aprobadas por curso (To-Do List de Curaduría).
+* Aplicación automática de eliminaciones en base vectorial al aprobar sugerencias de redundancia/eliminación.
 * Hook de pre-commit con `detect-secrets` para prevenir fuga accidental de secretos e información sensible.
 
 ## Estructura del Proyecto
@@ -297,6 +299,8 @@ El flujo HITL quedó integrado en `app.py` y en la interfaz:
 - Persistencia de sugerencias en `agent_suggestions` con estado inicial `pendiente`.
 - Resolución humana de sugerencias con transición a `aprobado` o `rechazado` y registro de `reviewed_by` / `reviewed_at`.
 - Captura de `score_manual` (1-5) y `feedback_text` al rechazar sugerencias.
+- Exportación de Plan de Acción (Markdown) con sugerencias aprobadas por curso.
+- Al aprobar sugerencias de redundancia/eliminación, se eliminan automáticamente los chunks referenciados en la base vectorial.
 - Feedback por respuesta del agente con pulgar arriba/abajo.
 - Calificación general de la conversacion al salir del chat (1-5).
 - Rutas de vista dedicadas: `/chat/<course>` y `/review/<course>` para interacción y revisión.
@@ -395,7 +399,8 @@ El flujo HITL quedó integrado en `app.py` y en la interfaz:
 ### Agente de Curaduría (HITL)
 - `GET /api/agent/suggestions?course_id=<id>` - Lista sugerencias pendientes del curso.
 - `GET /api/agent/suggestions/history/<course_id>` - Lista sugerencias aprobadas/rechazadas del curso.
-- `POST /api/agent/suggestions/<int:suggestion_id>/resolve` - Marca sugerencia como `aprobado` o `rechazado`.
+- `POST /api/agent/suggestions/<int:suggestion_id>/resolve` - Marca sugerencia como `aprobado` o `rechazado` (si es redundancia/eliminación, elimina chunks en base vectorial).
+- `GET /api/agent/export-suggestions/<course_id>` - Exporta un plan de acción en Markdown con sugerencias aprobadas.
 - `GET /api/agent/chat/history/<course_id>` - Retorna el historial reciente de chat del curso.
 - `POST /api/agent/chat` - Ejecuta chat contextual con tool-calling y retorna respuesta + fuentes.
 - `POST /api/agent/chat/feedback` - Registra feedback rapido (👍/👎) por respuesta del agente.
