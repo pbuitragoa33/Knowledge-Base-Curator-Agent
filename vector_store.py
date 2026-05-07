@@ -292,3 +292,39 @@ def query_course_embeddings(
         )
 
     return ranked_results
+
+
+def delete_chunks(chunk_ids: list[str], course_code: str) -> dict[str, object]:
+    """Elimina chunks específicos de la colección de un curso por sus IDs.
+    
+    Retorna un diccionario con el conteo de eliminados, no encontrados y errores.
+    """
+
+    if not chunk_ids:
+        return {'deleted': 0, 'not_found': [], 'errors': []}
+
+    collection = get_course_collection(course_code)
+    deleted = 0
+    not_found = []
+    errors = []
+
+    for chunk_id in chunk_ids:
+        try:
+            existing = collection.get(ids=[chunk_id], include=[])
+            existing_ids = _normalize_sequence(existing.get('ids'))
+
+            if not existing_ids:
+                not_found.append(chunk_id)
+                continue
+
+            collection.delete(ids=[chunk_id])
+            deleted += 1
+
+        except Exception as exc:
+            errors.append({'chunk_id': chunk_id, 'error': str(exc)})
+
+    return {
+        'deleted': deleted,
+        'not_found': not_found,
+        'errors': errors,
+    }
