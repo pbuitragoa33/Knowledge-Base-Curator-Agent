@@ -172,6 +172,45 @@ def _extract_json_candidates(raw_text: str) -> list[object]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _extract_json_object(raw_text: str) -> dict[str, object]:
+
+    """Extrae un objeto JSON desde una respuesta cruda del LLM."""
+
+    content = str(raw_text or "").strip()
+
+    if not content:
+
+        return {}
+
+    try:
+
+        parsed = json.loads(content)
+
+        if isinstance(parsed, dict):
+
+            return parsed
+
+    except json.JSONDecodeError:
+
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", content)
+
+    if not match:
+
+        return {}
+
+    try:
+
+        parsed = json.loads(match.group(0))
+
+    except json.JSONDecodeError:
+
+        return {}
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _coerce_suggestion(raw_item: object, fallback_context: str) -> dict[str, object] | None:
 
     """Limpia y valida una sugerencia estructurada."""
@@ -205,6 +244,89 @@ def _coerce_suggestion(raw_item: object, fallback_context: str) -> dict[str, obj
         "razonamiento": razonamiento,
         "evidencia_ids": [str(item) for item in evidence_ids],
     }
+
+
+def classify_chat_response_for_suggestion(
+    response_text: str,
+    *,
+    course_id: int,
+    sources: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+) -> dict[str, object]:
+    """Clasifica una respuesta de chat y devuelve una sugerencia estructurada si aplica."""
+
+    normalized_response = str(response_text or "").strip()
+
+    if not normalized_response:
+
+        return {"is_suggestion": False, "suggestion": None}
+
+    normalized_sources = [str(source) for source in (sources or []) if str(source or "").strip()]
+    available_evidence_ids = [
+        str(evidence_id)
+        for evidence_id in (evidence_ids or [])
+        if str(evidence_id or "").strip()
+    ]
+    prompt = (
+        "Clasifica la respuesta del agente para el curso "
+        f"{int(course_id)}. Marca is_suggestion=true solo si la respuesta propone "
+        "un cambio concreto y accionable sobre documentos del curso. No marques "
+        "como sugerencia respuestas conversacionales, explicaciones, resumenes, "
+        "preguntas de aclaracion ni observaciones sin accion documental concreta.\n\n"
+        "Devuelve exclusivamente un objeto JSON con estas claves: "
+        "is_suggestion, tipo, input_context, razonamiento, evidencia_ids. "
+        "tipo debe ser redundancia, deactualizacion o conflicto. "
+        "Usa solo evidencia_ids disponibles; si no hay evidencia directa, devuelve [].\n\n"
+        f"Fuentes disponibles: {json.dumps(normalized_sources, ensure_ascii=False)}\n"
+        f"evidence_ids disponibles: {json.dumps(available_evidence_ids, ensure_ascii=False)}\n"
+        f"Respuesta del agente:\n{normalized_response}"
+    )
+
+    try:
+
+        llm = get_agent_llm()
+        ai_response = llm.invoke([SystemMessage(content = prompt)])
+        raw_output = str(getattr(ai_response, "content", "") or "")
+        parsed = _extract_json_object(raw_output)
+
+    except Exception as e:
+
+        log_agent_error("classify_chat_response_for_suggestion", e)
+        return {"is_suggestion": False, "suggestion": None}
+
+    if not bool(parsed.get("is_suggestion")):
+
+        return {"is_suggestion": False, "suggestion": None}
+
+    parsed_evidence = parsed.get("evidencia_ids")
+
+    if available_evidence_ids:
+
+        allowed_evidence = set(available_evidence_ids)
+
+        if isinstance(parsed_evidence, list):
+
+            parsed["evidencia_ids"] = [
+                str(item)
+                for item in parsed_evidence
+                if str(item) in allowed_evidence
+            ]
+
+        else:
+
+            parsed["evidencia_ids"] = available_evidence_ids
+
+    else:
+
+        parsed["evidencia_ids"] = []
+
+    suggestion_payload = _coerce_suggestion(parsed, normalized_response)
+
+    if not suggestion_payload:
+
+        return {"is_suggestion": False, "suggestion": None}
+
+    return {"is_suggestion": True, "suggestion": suggestion_payload}
 
 
 def _analyze_course(state: AgentState) -> dict[str, object]:

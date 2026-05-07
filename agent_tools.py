@@ -121,10 +121,11 @@ def search_course_documents(query: str, course_id: int, top_n: int = 5) -> str:
         for i, item in enumerate(ranked_results, start=1):
             metadata = item.get("metadata", {})
             filename = metadata.get("filename", "desconocido")
+            chunk_id = item.get("chunk_id", "")
             score = round(item.get("score", 0.0), 4)
             text = item.get("text", "")
             output_lines.append(
-                f"[{i}] Fuente: {filename} | Score: {score}\n{text}\n"
+                f"[{i}] Chunk: {chunk_id} | Fuente: {filename} | Score: {score}\n{text}\n"
             )
 
         result = "\n".join(output_lines)

@@ -8,8 +8,11 @@ CREATE TABLE IF NOT EXISTS agent_chat_history
     sender_type TEXT NOT NULL CHECK(sender_type IN ('profesor', 'agente')),
     sender_username TEXT,
     message_text TEXT NOT NULL,
+    is_suggestion INTEGER NOT NULL DEFAULT 0 CHECK(is_suggestion IN (0, 1)),
+    suggestion_id INTEGER,
     created_at TEXT NOT NULL,
     FOREIGN KEY(course_id) REFERENCES courses(id),
+    FOREIGN KEY(suggestion_id) REFERENCES agent_suggestions(id),
     CHECK(
         (sender_type = 'profesor' AND sender_username IS NOT NULL AND TRIM(sender_username) <> '')
         OR
@@ -79,6 +82,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_conversation_created_at
 
 CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_created_at
     ON agent_chat_history(course_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_chat_history_suggestion_id
+    ON agent_chat_history(suggestion_id);
 
 CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_created_at
     ON agent_suggestions(course_id, created_at);

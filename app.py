@@ -76,6 +76,14 @@ DOWNLOAD_DIR = os.environ.get('DOWNLOAD_DIR', os.path.expanduser('~/Downloads/Up
 ALLOWED_EXTENSIONS = {'pdf', 'md', 'docx', 'txt'}
 DATABASE = os.environ.get('DATABASE_PATH', 'database.db')
 VALID_SHELF_STATUS = {'borrador', 'publicado'}
+DOCUMENT_STATUS_UPDATED = 'ACTUALIZADO'
+DOCUMENT_STATUS_IN_REVIEW = 'EN_REVISION'
+DOCUMENT_STATUS_APPROVED = 'APROBADO'
+VALID_DOCUMENT_STATUS = {
+    DOCUMENT_STATUS_UPDATED,
+    DOCUMENT_STATUS_IN_REVIEW,
+    DOCUMENT_STATUS_APPROVED,
+}
 EMBEDDING_MODEL_NAME = os.environ.get('EMBEDDING_MODEL_NAME', DEFAULT_EMBEDDING_MODEL_NAME)
 EMBEDDING_BATCH_SIZE = _read_positive_int_env('EMBEDDING_BATCH_SIZE', DEFAULT_EMBEDDING_BATCH_SIZE)
 EMBEDDING_DEVICE = os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE)
@@ -384,6 +392,21 @@ def _ensure_courses_schema(con, cursor):
     con.execute("PRAGMA foreign_keys = ON")
 
 
+def _ensure_documents_status_column(cursor):
+
+    """Garantiza el estado de ciclo de vida de documentos existentes."""
+
+    cursor.execute("PRAGMA table_info(documents)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if 'status' not in columns:
+        cursor.execute(
+            f'''ALTER TABLE documents
+                ADD COLUMN status TEXT NOT NULL DEFAULT '{DOCUMENT_STATUS_UPDATED}'
+                CHECK(status IN ('{DOCUMENT_STATUS_UPDATED}', '{DOCUMENT_STATUS_IN_REVIEW}', '{DOCUMENT_STATUS_APPROVED}'))'''
+        )
+
+
 def get_db_connection():
 
     """Crea una conexión SQLite con llaves foráneas habilitadas."""
@@ -409,8 +432,11 @@ def _create_agent_traceability_tables(cursor):
                   sender_type TEXT NOT NULL CHECK(sender_type IN ('profesor', 'agente')),
                   sender_username TEXT,
                   message_text TEXT NOT NULL,
+                  is_suggestion INTEGER NOT NULL DEFAULT 0 CHECK(is_suggestion IN (0, 1)),
+                  suggestion_id INTEGER,
                   created_at TEXT NOT NULL,
                   FOREIGN KEY(course_id) REFERENCES courses(id),
+                  FOREIGN KEY(suggestion_id) REFERENCES agent_suggestions(id),
                   CHECK(
                       (sender_type = 'profesor' AND sender_username IS NOT NULL AND TRIM(sender_username) <> '')
                       OR
@@ -483,6 +509,18 @@ def _ensure_agent_suggestions_columns(cursor):
         cursor.execute("ALTER TABLE agent_suggestions ADD COLUMN score_manual INTEGER")
 
 
+def _ensure_agent_chat_history_columns(cursor):
+
+    cursor.execute("PRAGMA table_info(agent_chat_history)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if 'is_suggestion' not in columns:
+        cursor.execute("ALTER TABLE agent_chat_history ADD COLUMN is_suggestion INTEGER NOT NULL DEFAULT 0")
+
+    if 'suggestion_id' not in columns:
+        cursor.execute("ALTER TABLE agent_chat_history ADD COLUMN suggestion_id INTEGER")
+
+
 def _create_agent_prompts_table(cursor):
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS agent_prompts
@@ -503,6 +541,10 @@ def _create_agent_traceability_indexes(cursor):
     cursor.execute(
         '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_created_at
            ON agent_chat_history(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_suggestion_id
+           ON agent_chat_history(suggestion_id)'''
     )
     cursor.execute(
         '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_created_at
@@ -637,7 +679,10 @@ def init_db():
                   upload_date TEXT NOT NULL,
                   filepath TEXT NOT NULL,
                   uploaded_by TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'ACTUALIZADO' CHECK(status IN ('ACTUALIZADO', 'EN_REVISION', 'APROBADO')),
                   FOREIGN KEY(course) REFERENCES courses(name))''')
+
+    _ensure_documents_status_column(c)
 
     # Tabla de Comentarios de Estudiantes
 
@@ -737,6 +782,7 @@ def init_db():
               user TEXT NOT NULL)''')
 
     _create_agent_traceability_tables(c)
+    _ensure_agent_chat_history_columns(c)
     _ensure_agent_suggestions_columns(c)
     _create_agent_traceability_indexes(c)
     _create_agent_prompts_table(c)
@@ -801,7 +847,15 @@ def _deserialize_evidence_ids(raw_value):
     return [str(item) for item in decoded]
 
 
-def save_agent_chat_message(course_id, conversation_id, sender_type, message_text, sender_username = None):
+def save_agent_chat_message(
+    course_id,
+    conversation_id,
+    sender_type,
+    message_text,
+    sender_username = None,
+    is_suggestion = False,
+    suggestion_id = None,
+):
 
     """Guarda un mensaje de trazabilidad entre profesor y agente."""
 
@@ -810,6 +864,8 @@ def save_agent_chat_message(course_id, conversation_id, sender_type, message_tex
     normalized_conversation_id = str(conversation_id or '').strip()
     normalized_message_text = str(message_text or '').strip()
     normalized_sender_type = str(sender_type or '').strip()
+    normalized_is_suggestion = 1 if normalized_sender_type == 'agente' and bool(is_suggestion) else 0
+    normalized_suggestion_id = int(suggestion_id) if normalized_is_suggestion and suggestion_id is not None else None
     con = get_db_connection()
     c = con.cursor()
 
@@ -817,14 +873,17 @@ def save_agent_chat_message(course_id, conversation_id, sender_type, message_tex
 
         c.execute(
             '''INSERT INTO agent_chat_history
-               (course_id, conversation_id, sender_type, sender_username, message_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)''',
+               (course_id, conversation_id, sender_type, sender_username, message_text,
+                is_suggestion, suggestion_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 int(course_id),
                 normalized_conversation_id,
                 normalized_sender_type,
                 normalized_sender_username,
                 normalized_message_text,
+                normalized_is_suggestion,
+                normalized_suggestion_id,
                 created_at,
             )
         )
@@ -888,12 +947,150 @@ def save_agent_suggestion(
                 normalized_score_manual,
             )
         )
+        suggestion_id = c.lastrowid
+
+        if normalized_estado == 'pendiente':
+
+            _mark_documents_in_review_for_evidence_ids(c, evidencia_ids)
+
+        else:
+
+            _refresh_document_statuses_for_evidence_ids(c, evidencia_ids)
+
         con.commit()
-        return c.lastrowid
+        return suggestion_id
 
     finally:
 
         con.close()
+
+
+def _build_agent_suggestion_payload(row):
+
+    if not row:
+
+        return None
+
+    return {
+        'id': row[0],
+        'course_id': row[1],
+        'conversation_id': row[2],
+        'tipo': row[3],
+        'input_context': row[4],
+        'razonamiento': row[5],
+        'evidencia_ids': _deserialize_evidence_ids(row[6]),
+        'estado': row[7],
+        'created_at': row[8],
+        'reviewed_at': row[9],
+        'reviewed_by': row[10],
+        'feedback_text': row[11],
+        'score_manual': row[12],
+    }
+
+
+def get_agent_suggestion(suggestion_id):
+
+    """Obtiene una sugerencia por id con el mismo contrato usado por las APIs."""
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                      evidencia_ids, estado, created_at, reviewed_at, reviewed_by,
+                      feedback_text, score_manual
+               FROM agent_suggestions
+               WHERE id = ?''',
+            (int(suggestion_id),)
+        )
+        row = c.fetchone()
+
+    finally:
+
+        con.close()
+
+    return _build_agent_suggestion_payload(row)
+
+
+def _list_agent_suggestions_by_ids(suggestion_ids):
+
+    normalized_ids = sorted({int(suggestion_id) for suggestion_id in suggestion_ids if suggestion_id is not None})
+
+    if not normalized_ids:
+
+        return {}
+
+    placeholders = ', '.join('?' for _ in normalized_ids)
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            f'''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                       evidencia_ids, estado, created_at, reviewed_at, reviewed_by,
+                       feedback_text, score_manual
+                FROM agent_suggestions
+                WHERE id IN ({placeholders})''',
+            tuple(normalized_ids)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    suggestions = {}
+
+    for row in rows:
+
+        payload = _build_agent_suggestion_payload(row)
+
+        if payload:
+
+            suggestions[int(payload['id'])] = payload
+
+    return suggestions
+
+
+def _build_agent_chat_history_payload(row):
+
+    is_suggestion = bool(row[7])
+    suggestion_id = row[8]
+
+    return {
+        'id': row[0],
+        'course_id': row[1],
+        'conversation_id': row[2],
+        'sender_type': row[3],
+        'sender_username': row[4],
+        'message_text': row[5],
+        'created_at': row[6],
+        'is_suggestion': is_suggestion,
+        'suggestion_id': suggestion_id,
+        'suggestion': None,
+    }
+
+
+def _attach_suggestions_to_chat_history(history):
+
+    suggestions_by_id = _list_agent_suggestions_by_ids(
+        entry.get('suggestion_id')
+        for entry in history
+        if entry.get('is_suggestion') and entry.get('suggestion_id') is not None
+    )
+
+    for entry in history:
+
+        suggestion_id = entry.get('suggestion_id')
+
+        if entry.get('is_suggestion') and suggestion_id is not None:
+
+            entry['suggestion'] = suggestions_by_id.get(int(suggestion_id))
+
+    return history
 
 
 def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
@@ -909,7 +1106,8 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
         if conversation_id:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ? AND conversation_id = ?
                    ORDER BY created_at ASC, id ASC
@@ -920,7 +1118,8 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
         else:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ?
                    ORDER BY created_at ASC, id ASC
@@ -934,21 +1133,9 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
 
         con.close()
 
-    history = []
+    history = [_build_agent_chat_history_payload(row) for row in rows]
 
-    for row in rows:
-
-        history.append({
-            'id': row[0],
-            'course_id': row[1],
-            'conversation_id': row[2],
-            'sender_type': row[3],
-            'sender_username': row[4],
-            'message_text': row[5],
-            'created_at': row[6],
-        })
-
-    return history
+    return _attach_suggestions_to_chat_history(history)
 
 
 def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10):
@@ -964,7 +1151,8 @@ def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10
         if conversation_id:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ? AND conversation_id = ?
                    ORDER BY created_at DESC, id DESC
@@ -975,7 +1163,8 @@ def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10
         else:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ?
                    ORDER BY created_at DESC, id DESC
@@ -989,21 +1178,9 @@ def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10
 
         con.close()
 
-    history = []
+    history = [_build_agent_chat_history_payload(row) for row in reversed(rows)]
 
-    for row in reversed(rows):
-
-        history.append({
-            'id': row[0],
-            'course_id': row[1],
-            'conversation_id': row[2],
-            'sender_type': row[3],
-            'sender_username': row[4],
-            'message_text': row[5],
-            'created_at': row[6],
-        })
-
-    return history
+    return _attach_suggestions_to_chat_history(history)
 
 
 def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
@@ -1141,6 +1318,102 @@ def _extract_document_id_from_evidence_id(evidence_id):
     except (TypeError, ValueError):
 
         return None
+
+
+def _extract_document_ids_from_evidence_ids(evidence_ids):
+
+    """Obtiene document_id únicos desde una lista o JSON de evidencia."""
+
+    if isinstance(evidence_ids, str):
+
+        evidence_ids = _deserialize_evidence_ids(evidence_ids)
+
+    if evidence_ids is None:
+
+        evidence_ids = []
+
+    document_ids = set()
+
+    for evidence_id in evidence_ids:
+
+        document_id = _extract_document_id_from_evidence_id(evidence_id)
+
+        if document_id is not None:
+
+            document_ids.add(document_id)
+
+    return sorted(document_ids)
+
+
+def _set_documents_status(cursor, document_ids, status):
+
+    """Actualiza estado de documentos si hay ids válidos."""
+
+    normalized_status = str(status or '').strip().upper()
+
+    if normalized_status not in VALID_DOCUMENT_STATUS:
+
+        return
+
+    normalized_document_ids = [int(document_id) for document_id in document_ids if document_id is not None]
+
+    if not normalized_document_ids:
+
+        return
+
+    placeholders = ', '.join('?' for _ in normalized_document_ids)
+    cursor.execute(
+        f'''UPDATE documents
+            SET status = ?
+            WHERE id IN ({placeholders})''',
+        tuple([normalized_status] + normalized_document_ids),
+    )
+
+
+def _mark_documents_in_review_for_evidence_ids(cursor, evidence_ids):
+
+    document_ids = _extract_document_ids_from_evidence_ids(evidence_ids)
+    _set_documents_status(cursor, document_ids, DOCUMENT_STATUS_IN_REVIEW)
+
+
+def _refresh_document_statuses_for_evidence_ids(cursor, evidence_ids):
+
+    """Recalcula estado según sugerencias pendientes asociadas al documento."""
+
+    document_ids = _extract_document_ids_from_evidence_ids(evidence_ids)
+
+    for document_id in document_ids:
+
+        cursor.execute(
+            '''SELECT estado, evidencia_ids
+               FROM agent_suggestions
+               WHERE evidencia_ids LIKE ?''',
+            (f'%:{document_id}:%',)
+        )
+        suggestion_rows = cursor.fetchall()
+        has_associated_suggestion = False
+        has_pending_suggestion = False
+
+        for estado, raw_evidence_ids in suggestion_rows:
+
+            if document_id not in _extract_document_ids_from_evidence_ids(raw_evidence_ids):
+
+                continue
+
+            has_associated_suggestion = True
+
+            if str(estado or '').strip() == 'pendiente':
+
+                has_pending_suggestion = True
+                break
+
+        if has_pending_suggestion:
+
+            _set_documents_status(cursor, [document_id], DOCUMENT_STATUS_IN_REVIEW)
+
+        elif has_associated_suggestion:
+
+            _set_documents_status(cursor, [document_id], DOCUMENT_STATUS_APPROVED)
 
 
 def _resolve_export_document_lookup(cursor, course_name, suggestions):
@@ -1314,6 +1587,14 @@ def update_agent_suggestion_status(suggestion_id, estado, reviewed_by, score_man
     try:
 
         c.execute(
+            '''SELECT evidencia_ids
+               FROM agent_suggestions
+               WHERE id = ?''',
+            (int(suggestion_id),)
+        )
+        suggestion_row = c.fetchone()
+
+        c.execute(
             '''UPDATE agent_suggestions
                SET estado = ?, reviewed_at = ?, reviewed_by = ?, feedback_text = ?, score_manual = ?
                WHERE id = ?''',
@@ -1326,8 +1607,14 @@ def update_agent_suggestion_status(suggestion_id, estado, reviewed_by, score_man
                 int(suggestion_id),
             )
         )
+        updated = c.rowcount > 0
+
+        if updated and suggestion_row:
+
+            _refresh_document_statuses_for_evidence_ids(c, suggestion_row[0])
+
         con.commit()
-        return c.rowcount > 0
+        return updated
 
     finally:
 
@@ -2212,14 +2499,22 @@ def upload_files():
                               (document_id, next_version, filename, file_hash, upload_date, filepath, user))
                     
                     # Actualizar el documento principal con la versión mós reciente
-                    c.execute('UPDATE documents SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ? WHERE id = ?',
-                              (file_hash, upload_date, filepath, user, document_id))
+                    c.execute(
+                        '''UPDATE documents
+                           SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ?, status = ?
+                           WHERE id = ?''',
+                        (file_hash, upload_date, filepath, user, DOCUMENT_STATUS_UPDATED, document_id)
+                    )
                 
                 else:
                     # Documento nuevo
                     doc_hash = generate_hash(str(datetime.now()) + filename + user)
-                    c.execute('INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
-                              (course, doc_hash, filename, file_hash, upload_date, filepath, user))
+                    c.execute(
+                        '''INSERT INTO documents
+                           (course, doc_hash, filename, file_hash, upload_date, filepath, uploaded_by, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (course, doc_hash, filename, file_hash, upload_date, filepath, user, DOCUMENT_STATUS_UPDATED)
+                    )
                     document_id = c.lastrowid
                     
                     # Insertar como versión 1
@@ -2257,7 +2552,8 @@ def upload_files():
                     'file_hash': file_hash,
                     'upload_date': upload_date,
                     'doc_hash': doc_hash,
-                    'document_id': document_id
+                    'document_id': document_id,
+                    'status': DOCUMENT_STATUS_UPDATED,
                 })
         
         if not uploaded_files:
@@ -2351,7 +2647,10 @@ def get_documents(course):
 
     con = sqlite3.connect(DATABASE)
     c = con.cursor()
-    c.execute('SELECT id, doc_hash, filename, file_hash, upload_date, uploaded_by FROM documents WHERE course = ? ORDER BY upload_date DESC',
+    c.execute('''SELECT id, doc_hash, filename, file_hash, upload_date, uploaded_by, status
+                 FROM documents
+                 WHERE course = ?
+                 ORDER BY upload_date DESC''',
               (course,))
     
     docs = c.fetchall()
@@ -2359,7 +2658,7 @@ def get_documents(course):
     
     documents = []
 
-    for doc_id, doc_hash, filename, file_hash, upload_date, uploaded_by in docs:
+    for doc_id, doc_hash, filename, file_hash, upload_date, uploaded_by, status in docs:
 
         documents.append({
             'id': doc_id,
@@ -2367,7 +2666,8 @@ def get_documents(course):
             'filename': filename,
             'file_hash': file_hash,
             'upload_date': upload_date,
-            'uploaded_by': uploaded_by
+            'uploaded_by': uploaded_by,
+            'status': status or DOCUMENT_STATUS_UPDATED,
         })
     
     return jsonify(documents)
@@ -3793,16 +4093,13 @@ def export_agent_suggestions(course_id):
     return response
 
 
-@app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
-@admin_required
-def resolve_agent_suggestion(suggestion_id):
+def _resolve_agent_suggestion_request(suggestion_id, data):
     """Aprueba o rechaza una sugerencia del agente.
     
     Si la sugerencia es aprobada y es de tipo redundancia,
     elimina automáticamente los chunks de la base vectorial.
     """
 
-    data = request.get_json(silent=True) or {}
     estado = str(data.get('estado', '')).strip()
     feedback_text = str(data.get('feedback_text', '') or '').strip()
     score_raw = data.get('score_manual')
@@ -3902,7 +4199,69 @@ def resolve_agent_suggestion(suggestion_id):
             'not_found': vector_deletion_result.get('not_found', []),
         }
 
+    response['suggestion'] = get_agent_suggestion(suggestion_id)
+
     return jsonify(response), 200
+
+
+@app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
+@admin_required
+def resolve_agent_suggestion(suggestion_id):
+    """Aprueba o rechaza una sugerencia desde el dashboard HITL."""
+
+    data = request.get_json(silent=True) or {}
+    return _resolve_agent_suggestion_request(suggestion_id, data)
+
+
+@app.route('/api/agent/resolve-suggestion', methods=['POST'])
+@admin_required
+def resolve_agent_suggestion_from_chat():
+    """Compatibilidad para resolver una sugerencia embebida en el chat."""
+
+    data = request.get_json(silent=True) or {}
+    suggestion_id_raw = data.get('suggestion_id')
+
+    try:
+        suggestion_id = int(suggestion_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El campo 'suggestion_id' debe ser un numero entero"}), 400
+
+    return _resolve_agent_suggestion_request(suggestion_id, data)
+
+
+@app.route('/api/agent/chat/feedback', methods=['POST'])
+@admin_required
+def save_agent_chat_feedback():
+    """Guarda feedback pulgar arriba/abajo para una respuesta conversacional."""
+
+    data = request.get_json(silent=True) or {}
+    message_id_raw = data.get('message_id')
+    course_id_raw = data.get('course_id')
+    feedback_value = str(data.get('feedback_value', '') or '').strip().lower()
+
+    try:
+        message_id = int(message_id_raw)
+        course_id = int(course_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "Los campos 'message_id' y 'course_id' deben ser enteros"}), 400
+
+    if feedback_value not in ('up', 'down'):
+        return jsonify({'error': "El campo 'feedback_value' debe ser 'up' o 'down'"}), 400
+
+    updated, reason = upsert_agent_chat_feedback(
+        course_id,
+        message_id,
+        feedback_value,
+        session['user'],
+    )
+
+    if not updated:
+        if reason == 'not_agent':
+            return jsonify({'error': 'Solo se puede valorar una respuesta del agente'}), 400
+
+        return jsonify({'error': 'Mensaje no encontrado'}), 404
+
+    return jsonify({'message': 'Feedback guardado'}), 200
 
 
 @app.route('/api/agent/chat/session-rating', methods=['POST'])
@@ -4029,6 +4388,8 @@ def agent_chat():
             'sources': [],
             'conversation_id': conversation_id,
             'agent_message_id': agent_message_id,
+            'is_suggestion': False,
+            'suggestion': None,
         }), 200
 
     # ── Construir historial de mensajes para el LLM ────────────────────────
@@ -4059,6 +4420,7 @@ def agent_chat():
         llm = get_llm_with_tools()
         ai_response = llm.invoke(lc_messages)
         sources = []
+        evidence_ids = []
         tool_calls = getattr(ai_response, 'tool_calls', []) or []
 
         if tool_calls:
@@ -4075,6 +4437,12 @@ def agent_chat():
 
                     # Extraer nombres de archivo del output formateado de la tool
                     for line in tool_result.splitlines():
+                        chunk_match = re.search(r'Chunk:\s*(.+?)\s*\|', line)
+                        if chunk_match:
+                            evidence_id = chunk_match.group(1).strip()
+                            if evidence_id and evidence_id not in evidence_ids:
+                                evidence_ids.append(evidence_id)
+
                         match = re.search(r'Fuente:\s*(.+?)\s*\|', line)
                         if match:
                             source = match.group(1).strip()
@@ -4098,14 +4466,47 @@ def agent_chat():
     except Exception as e:
         return jsonify({'error': f'Error al procesar la respuesta del agente: {str(e)}'}), 500
 
+    from agent_workflow import classify_chat_response_for_suggestion
+
+    classification = classify_chat_response_for_suggestion(
+        final_text,
+        course_id = course_id,
+        sources = sources,
+        evidence_ids = evidence_ids,
+    )
+    suggestion = classification.get('suggestion') if classification.get('is_suggestion') else None
+    suggestion_id = None
+    is_suggestion = bool(suggestion)
+
+    if suggestion:
+        suggestion_id = save_agent_suggestion(
+            course_id = course_id,
+            conversation_id = conversation_id,
+            tipo = suggestion['tipo'],
+            input_context = suggestion['input_context'],
+            razonamiento = suggestion['razonamiento'],
+            evidencia_ids = suggestion['evidencia_ids'],
+            estado = 'pendiente',
+        )
+        suggestion = get_agent_suggestion(suggestion_id)
+
     # Guardar respuesta del agente
-    agent_message_id = save_agent_chat_message(course_id, conversation_id, 'agente', final_text)
+    agent_message_id = save_agent_chat_message(
+        course_id,
+        conversation_id,
+        'agente',
+        final_text,
+        is_suggestion = is_suggestion,
+        suggestion_id = suggestion_id,
+    )
 
     return jsonify({
         'response': final_text,
         'sources': sources,
         'conversation_id': conversation_id,
         'agent_message_id': agent_message_id,
+        'is_suggestion': is_suggestion,
+        'suggestion': suggestion,
     }), 200
 
 
