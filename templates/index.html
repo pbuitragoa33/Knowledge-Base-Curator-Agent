@@ -12,6 +12,9 @@
             <h1>Curador de Conocimiento Asistido</h1>
             <div class="user-info">
                 <span>Usuario: {{ session.user }} ({{ session.role }})</span>
+                {% if session.role in ['admin', 'profesor'] %}
+                <a href="/dashboard" class="btn btn-dashboard btn-small">Dashboard</a>
+                {% endif %}
                 <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesion</a>
             </div>
         </div>
