@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard del Agente</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container dashboard-page">
+        <div class="header-top">
+            <h1>Dashboard del Agente</h1>
+            <div class="user-info">
+                <span>Usuario: {{ session.user }} ({{ session.role }})</span>
+                <a href="/" class="btn btn-secondary btn-small">Cursos</a>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesion</a>
+            </div>
+        </div>
+
+        <div class="card dashboard-hero dash-animate" style="animation-delay: 0ms;">
+            <div class="dashboard-hero-content">
+                <div class="dashboard-hero-text">
+                    <p class="dashboard-eyebrow">Panel de control</p>
+                    <h2>Visibilidad clara del uso del agente</h2>
+                    <p>Monitorea consultas, actividad reciente y cursos con mayor movimiento del equipo.</p>
+                </div>
+                <div class="dashboard-hero-actions">
+                    <div class="dashboard-role-pill">Rol activo: {{ (session.role or '') | upper }}</div>
+                    <div class="dashboard-role-pill secondary">Cursos visibles: <span id="metricScopeCourses">--</span></div>
+                    <a href="/" class="btn btn-dashboard">Seleccionar curso</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="card dashboard-stat-card dash-animate" style="animation-delay: 80ms;">
+                <div class="dashboard-stat-header">
+                    <span class="dashboard-stat-label">Consultas recientes</span>
+                    <span class="dashboard-stat-tag">Ultimos 50</span>
+                </div>
+                <div class="dashboard-stat-value" id="metricTotalQueries">--</div>
+                <p class="dashboard-stat-note">Total de consultas registradas en la ultima carga.</p>
+            </div>
+
+            <div class="card dashboard-stat-card dash-animate" style="animation-delay: 140ms;">
+                <div class="dashboard-stat-header">
+                    <span class="dashboard-stat-label">Cursos activos</span>
+                    <span class="dashboard-stat-tag">Multicurso</span>
+                </div>
+                <div class="dashboard-stat-value" id="metricActiveCourses">--</div>
+                <p class="dashboard-stat-note">Cursos con actividad registrada recientemente.</p>
+            </div>
+
+            <div class="card dashboard-stat-card dash-animate" style="animation-delay: 200ms;">
+                <div class="dashboard-stat-header">
+                    <span class="dashboard-stat-label">Ultima consulta</span>
+                    <span class="dashboard-stat-tag">Tiempo real</span>
+                </div>
+                <div class="dashboard-stat-value dashboard-stat-timestamp" id="metricLastQuery">--</div>
+                <p class="dashboard-stat-note">Hora de la ultima interaccion registrada.</p>
+            </div>
+        </div>
+
+        <div class="dashboard-section dash-animate" style="animation-delay: 260ms;">
+            <div class="dashboard-section-header">
+                <div>
+                    <h3>Evaluacion del agente</h3>
+                    <p class="dashboard-subtitle">Feedback directo y estado de sugerencias.</p>
+                </div>
+            </div>
+            <div class="dashboard-grid dashboard-eval-grid">
+                <div class="card dashboard-eval-card">
+                    <div class="dashboard-stat-header">
+                        <span class="dashboard-stat-label">Feedback de respuestas</span>
+                        <span class="dashboard-stat-tag">Pulgar</span>
+                    </div>
+                    <div class="dashboard-eval-row">
+                        <div class="dashboard-eval-item">
+                            <span class="dashboard-eval-label">Positivo</span>
+                            <span class="dashboard-eval-value" id="metricFeedbackUp">--</span>
+                        </div>
+                        <div class="dashboard-eval-item">
+                            <span class="dashboard-eval-label">Negativo</span>
+                            <span class="dashboard-eval-value" id="metricFeedbackDown">--</span>
+                        </div>
+                    </div>
+                    <p class="dashboard-stat-note">Ratio positivo: <span id="metricFeedbackRatio">--</span></p>
+                </div>
+
+                <div class="card dashboard-eval-card">
+                    <div class="dashboard-stat-header">
+                        <span class="dashboard-stat-label">Calificacion de sesiones</span>
+                        <span class="dashboard-stat-tag">1-5</span>
+                    </div>
+                    <div class="dashboard-eval-score" id="metricRatingAverage">--</div>
+                    <p class="dashboard-stat-note">Promedio sobre <span id="metricRatingTotal">--</span> evaluaciones.</p>
+                    <div class="dashboard-rating-list" id="ratingDistribution"></div>
+                </div>
+
+                <div class="card dashboard-eval-card">
+                    <div class="dashboard-stat-header">
+                        <span class="dashboard-stat-label">Sugerencias formales</span>
+                        <span class="dashboard-stat-tag">Estado</span>
+                    </div>
+                    <div class="dashboard-suggestion-stack">
+                        <div class="dashboard-suggestion-item">
+                            <span>Aprobadas</span>
+                            <strong id="metricSuggestionsApproved">--</strong>
+                        </div>
+                        <div class="dashboard-suggestion-item">
+                            <span>Rechazadas</span>
+                            <strong id="metricSuggestionsRejected">--</strong>
+                        </div>
+                        <div class="dashboard-suggestion-item">
+                            <span>Pendientes</span>
+                            <strong id="metricSuggestionsPending">--</strong>
+                        </div>
+                    </div>
+                    <p class="dashboard-stat-note">Incluye aprobaciones y rechazos desde revision.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card dashboard-activity-card dash-animate" style="animation-delay: 320ms;">
+            <div class="dashboard-activity-header">
+                <div>
+                    <h3>Actividad reciente</h3>
+                    <p class="dashboard-subtitle">Ultimas consultas realizadas por el equipo.</p>
+                </div>
+                <div class="dashboard-activity-badge" id="activityCount">0 registros</div>
+            </div>
+            <div id="activityList" class="dashboard-activity-list">
+                <p class="loading">Cargando metricas...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const activityList = document.getElementById('activityList');
+        const activityCount = document.getElementById('activityCount');
+        const totalQueries = document.getElementById('metricTotalQueries');
+        const activeCourses = document.getElementById('metricActiveCourses');
+        const lastQuery = document.getElementById('metricLastQuery');
+        const scopeCourses = document.getElementById('metricScopeCourses');
+        const feedbackUp = document.getElementById('metricFeedbackUp');
+        const feedbackDown = document.getElementById('metricFeedbackDown');
+        const feedbackRatio = document.getElementById('metricFeedbackRatio');
+        const ratingAverage = document.getElementById('metricRatingAverage');
+        const ratingTotal = document.getElementById('metricRatingTotal');
+        const ratingDistribution = document.getElementById('ratingDistribution');
+        const suggestionsApproved = document.getElementById('metricSuggestionsApproved');
+        const suggestionsRejected = document.getElementById('metricSuggestionsRejected');
+        const suggestionsPending = document.getElementById('metricSuggestionsPending');
+
+        function escapeHtml(value) {
+            const temp = document.createElement('div');
+            temp.textContent = value;
+            return temp.innerHTML;
+        }
+
+        function setText(target, value, fallback) {
+            if (!target) return;
+            if (value === undefined || value === null || value === '') {
+                target.textContent = fallback;
+                return;
+            }
+            target.textContent = value;
+        }
+
+        function renderActivityList(metrics) {
+            if (!activityList) return;
+
+            if (!metrics.length) {
+                activityList.innerHTML = '<p class="no-data">No hay metricas registradas.</p>';
+                if (activityCount) {
+                    activityCount.textContent = '0 registros';
+                }
+                return;
+            }
+
+            activityList.innerHTML = metrics.slice(0, 8).map(metric => {
+                const courseLabel = metric.course_name || 'Curso';
+                const courseCode = metric.course_code ? ` (${metric.course_code})` : '';
+                const queryText = metric.query_text || 'Consulta sin texto';
+                const strategy = metric.search_strategy || 'N/D';
+                const user = metric.user || 'N/D';
+                const timestamp = metric.timestamp || '';
+
+                return `
+                    <div class="dashboard-activity-item">
+                        <div class="dashboard-activity-row">
+                            <div class="dashboard-activity-course">${escapeHtml(courseLabel)}<span class="dashboard-activity-code">${escapeHtml(courseCode)}</span></div>
+                            <div class="dashboard-activity-time">${escapeHtml(timestamp)}</div>
+                        </div>
+                        <div class="dashboard-activity-query">${escapeHtml(queryText)}</div>
+                        <div class="dashboard-activity-meta">
+                            <span>Busqueda: ${escapeHtml(strategy)}</span>
+                            <span>Usuario: ${escapeHtml(user)}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            if (activityCount) {
+                activityCount.textContent = `${metrics.length} registros`;
+            }
+        }
+
+        function renderRatingDistribution(distribution) {
+            if (!ratingDistribution) return;
+
+            const values = distribution || {};
+            ratingDistribution.innerHTML = [1, 2, 3, 4, 5].map(score => {
+                const value = values[String(score)] || 0;
+                return `<span class="dashboard-rating-chip">${score}/5: ${value}</span>`;
+            }).join('');
+        }
+
+        async function loadDashboard() {
+            if (!activityList) return;
+
+            try {
+                const response = await fetch(`/api/dashboard/metrics?limit=50&ts=${Date.now()}`);
+                if (!response.ok) {
+                    throw new Error('No fue posible cargar las metricas');
+                }
+
+                const payload = await response.json();
+                const scope = payload.scope || {};
+                const retrieval = payload.retrieval || {};
+                const feedback = payload.feedback || {};
+                const ratings = payload.session_ratings || {};
+                const suggestions = payload.suggestions || {};
+                const metrics = Array.isArray(retrieval.metrics) ? retrieval.metrics : [];
+
+                setText(scopeCourses, scope.course_count !== undefined ? String(scope.course_count) : '--', '--');
+                setText(totalQueries, retrieval.total !== undefined ? String(retrieval.total) : '0', '0');
+                setText(activeCourses, retrieval.active_courses !== undefined ? String(retrieval.active_courses) : '0', '0');
+                setText(lastQuery, retrieval.last_query_at || 'Sin registros', 'Sin registros');
+
+                const upCount = feedback.up || 0;
+                const downCount = feedback.down || 0;
+                const ratio = feedback.ratio_up !== undefined ? feedback.ratio_up : 0;
+                setText(feedbackUp, String(upCount), '0');
+                setText(feedbackDown, String(downCount), '0');
+                setText(feedbackRatio, `${ratio}%`, '0%');
+
+                const ratingAvg = typeof ratings.average === 'number' ? ratings.average.toFixed(1) : '0.0';
+                setText(ratingAverage, ratingAvg, '0.0');
+                setText(ratingTotal, String(ratings.total || 0), '0');
+                renderRatingDistribution(ratings.distribution || {});
+
+                setText(suggestionsApproved, String(suggestions.aprobado || 0), '0');
+                setText(suggestionsRejected, String(suggestions.rechazado || 0), '0');
+                setText(suggestionsPending, String(suggestions.pendiente || 0), '0');
+
+                renderActivityList(metrics);
+            } catch (error) {
+                if (activityList) {
+                    activityList.innerHTML = `<p class="error-message">Error: ${escapeHtml(error.message)}</p>`;
+                }
+                setText(totalQueries, '--', '--');
+                setText(activeCourses, '--', '--');
+                setText(lastQuery, 'Sin datos', 'Sin datos');
+                setText(scopeCourses, '--', '--');
+                setText(feedbackUp, '--', '--');
+                setText(feedbackDown, '--', '--');
+                setText(feedbackRatio, '--', '--');
+                setText(ratingAverage, '--', '--');
+                setText(ratingTotal, '--', '--');
+                if (ratingDistribution) {
+                    ratingDistribution.innerHTML = '';
+                }
+                setText(suggestionsApproved, '--', '--');
+                setText(suggestionsRejected, '--', '--');
+                setText(suggestionsPending, '--', '--');
+                if (activityCount) {
+                    activityCount.textContent = 'Sin datos';
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadDashboard);
+    </script>
+</body>
+</html>
