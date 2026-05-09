@@ -4114,7 +4114,39 @@ def get_dashboard_metrics():
                 'rechazado': suggestion_counts['rechazado'],
                 'pendiente': suggestion_counts['pendiente'],
                 'total': sum(suggestion_counts.values()),
+                'porcentaje_aprobacion': round(
+                    (suggestion_counts['aprobado'] /
+                     (suggestion_counts['aprobado'] + suggestion_counts['rechazado'])) * 100, 1
+                ) if (suggestion_counts['aprobado'] + suggestion_counts['rechazado']) > 0 else 0,
             },
+        }
+
+        # Distribución del estado de documentos
+        doc_status_counts = {}
+        if role == 'profesor' and course_ids:
+            placeholders = ', '.join('?' for _ in course_ids)
+            c.execute(
+                f'''SELECT co.status, COUNT(d.id) as doc_count
+                    FROM courses co
+                    LEFT JOIN documents d ON d.course = co.name
+                    WHERE co.id IN ({placeholders})
+                    GROUP BY co.status''',
+                tuple(course_ids)
+            )
+        else:
+            c.execute(
+                '''SELECT co.status, COUNT(d.id) as doc_count
+                   FROM courses co
+                   LEFT JOIN documents d ON d.course = co.name
+                   GROUP BY co.status'''
+            )
+
+        for status, count in c.fetchall():
+            doc_status_counts[status] = count
+
+        response['documents'] = {
+            'distribution': doc_status_counts,
+            'total': sum(doc_status_counts.values()),
         }
 
         return jsonify(response), 200
@@ -4122,6 +4154,134 @@ def get_dashboard_metrics():
     finally:
 
         con.close()
+
+@app.route('/api/dashboard/suggestions', methods=['GET'])
+@admin_required
+def get_dashboard_suggestions():
+    """Retorna lista de sugerencias filtrable por curso, tipo y estado.
+    
+    Profesor: solo ve sugerencias de sus propios cursos.
+    Admin: ve todas las sugerencias.
+    """
+
+    user = session.get('user')
+    course_id_raw = request.args.get('course_id', '').strip()
+    tipo = request.args.get('tipo', '').strip().lower()
+    estado = request.args.get('estado', '').strip().lower()
+    raw_limit = request.args.get('limit', 50)
+
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    limit = min(max(1, limit), 200)
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute("SELECT role FROM users WHERE username = ?", (user,))
+        role_row = c.fetchone()
+
+        if not role_row:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        role = role_row[0]
+
+        # Obtener curso_ids permitidos según el rol
+        allowed_course_ids = []
+
+        if role == 'profesor':
+            scope = _get_professor_course_scope(c, user)
+            allowed_course_ids = scope['course_ids']
+
+            if not allowed_course_ids:
+                return jsonify({'total': 0, 'suggestions': []}), 200
+
+        # Validar course_id si se pasa como filtro
+        course_id = None
+        if course_id_raw:
+            try:
+                course_id = int(course_id_raw)
+            except (TypeError, ValueError):
+                return jsonify({'error': "El parametro 'course_id' debe ser un numero entero"}), 400
+
+            # Si es profesor, verificar que el curso le pertenece
+            if role == 'profesor' and course_id not in allowed_course_ids:
+                return jsonify({'total': 0, 'suggestions': []}), 200
+
+        # Validar tipo si se pasa como filtro
+        valid_tipos = ('redundancia', 'deactualizacion', 'conflicto')
+        if tipo and tipo not in valid_tipos:
+            return jsonify({'error': f"El tipo debe ser uno de: {', '.join(valid_tipos)}"}), 400
+
+        # Validar estado si se pasa como filtro
+        valid_estados = ('pendiente', 'aprobado', 'rechazado')
+        if estado and estado not in valid_estados:
+            return jsonify({'error': f"El estado debe ser uno de: {', '.join(valid_estados)}"}), 400
+
+        # Construir query dinámicamente
+        where_clauses = []
+        params = []
+
+        if role == 'profesor':
+            placeholders = ', '.join('?' for _ in allowed_course_ids)
+            where_clauses.append(f'course_id IN ({placeholders})')
+            params.extend(allowed_course_ids)
+
+        if course_id:
+            where_clauses.append('course_id = ?')
+            params.append(course_id)
+
+        if tipo:
+            where_clauses.append('tipo = ?')
+            params.append(tipo)
+
+        if estado:
+            where_clauses.append('estado = ?')
+            params.append(estado)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+        params.append(limit)
+
+        c.execute(
+            f'''SELECT s.id, s.course_id, co.name, s.tipo, s.input_context,
+                       s.razonamiento, s.evidencia_ids, s.estado, s.created_at,
+                       s.reviewed_at, s.reviewed_by, s.feedback_text, s.score_manual
+                FROM agent_suggestions s
+                JOIN courses co ON co.id = s.course_id
+                {where_sql}
+                ORDER BY s.created_at DESC
+                LIMIT ?''',
+            tuple(params)
+        )
+
+        rows = c.fetchall()
+
+    finally:
+        con.close()
+
+    suggestions = []
+    for row in rows:
+        suggestions.append({
+            'id': row[0],
+            'course_id': row[1],
+            'course_name': row[2],
+            'tipo': row[3],
+            'input_context': row[4],
+            'razonamiento': row[5],
+            'evidencia_ids': _deserialize_evidence_ids(row[6]),
+            'estado': row[7],
+            'created_at': row[8],
+            'reviewed_at': row[9],
+            'reviewed_by': row[10],
+            'feedback_text': row[11],
+            'score_manual': row[12],
+        })
+
+    return jsonify({'total': len(suggestions), 'suggestions': suggestions}), 200
 
 
 @app.route('/api/retrieval-metrics', methods=['GET'])
