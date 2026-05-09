@@ -1969,6 +1969,32 @@ def admin_required(f):
     return decorated_function
 
 
+def _get_professor_course_scope(cursor, professor_username):
+
+    cursor.execute(
+        '''SELECT id, name, course_code
+           FROM courses
+           WHERE responsible_teacher = ?
+           UNION
+           SELECT c.id, c.name, c.course_code
+           FROM courses c
+           INNER JOIN course_professors cp ON cp.course_name = c.name
+           WHERE cp.professor_username = ?''',
+        (professor_username, professor_username)
+    )
+
+    rows = cursor.fetchall()
+    course_ids = sorted({int(row[0]) for row in rows if row[0] is not None})
+    course_names = sorted({row[1] for row in rows if row[1]})
+    course_codes = sorted({normalize_course_code(row[2]) for row in rows if row[2]})
+
+    return {
+        'course_ids': course_ids,
+        'course_names': course_names,
+        'course_codes': course_codes,
+    }
+
+
 # --------------------------------------------------------
 # Permitir las tipos de archivos (.txt, .md, .docx, .pdf)
 # --------------------------------------------------------
@@ -2385,6 +2411,34 @@ def logout():
 def index():
 
     return render_template('index.html', role = session.get('role'))
+
+
+# Dashboard de estadisticas
+
+@app.route('/dashboard')
+
+@login_required
+
+def dashboard():
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute("SELECT role FROM users WHERE username = ?", (session.get('user'),))
+    result = c.fetchone()
+    con.close()
+
+    if not result:
+
+        session.clear()
+        return redirect(url_for('login'))
+
+    if result[0] not in ['admin', 'profesor']:
+
+        return redirect(url_for('index'))
+
+    session['role'] = result[0]
+
+    return render_template('dashboard.html')
 
 
 # Subir/crear Curso
@@ -3899,31 +3953,252 @@ def update_search_strategy(course_id):
         return jsonify({'error': str(e)}), 500
 
 # Consultar métricas de recuperación
+@app.route('/api/dashboard/metrics', methods=['GET'])
+@admin_required
+def get_dashboard_metrics():
+    """Retorna métricas agregadas para el dashboard (solo admin/profesor)."""
+
+    user = session.get('user')
+    raw_limit = request.args.get('limit', 50)
+
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    limit = min(max(1, limit), 200)
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute("SELECT role FROM users WHERE username = ?", (user,))
+        role_row = c.fetchone()
+
+        if not role_row:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        role = role_row[0]
+        course_ids = []
+        course_codes = []
+
+        if role == 'profesor':
+            scope = _get_professor_course_scope(c, user)
+            course_ids = scope['course_ids']
+            course_codes = scope['course_codes']
+            course_count = len(course_ids)
+        else:
+            c.execute("SELECT COUNT(*) FROM courses")
+            count_row = c.fetchone()
+            course_count = count_row[0] if count_row else 0
+
+        metrics_rows = []
+        if role == 'profesor':
+            if course_codes:
+                placeholders = ', '.join('?' for _ in course_codes)
+                c.execute(
+                    f'''SELECT timestamp, course_name, course_code, query_text,
+                                search_strategy, top_n, returned_doc_ids, scores, user
+                         FROM retrieval_metrics
+                         WHERE UPPER(course_code) IN ({placeholders})
+                         ORDER BY timestamp DESC LIMIT ?''',
+                    tuple(course_codes) + (limit,)
+                )
+                metrics_rows = c.fetchall()
+        else:
+            c.execute(
+                '''SELECT timestamp, course_name, course_code, query_text,
+                          search_strategy, top_n, returned_doc_ids, scores, user
+                   FROM retrieval_metrics
+                   ORDER BY timestamp DESC LIMIT ?''',
+                (limit,)
+            )
+            metrics_rows = c.fetchall()
+
+        metrics = []
+        for row in metrics_rows:
+            metrics.append({
+                'timestamp': row[0],
+                'course_name': row[1],
+                'course_code': row[2],
+                'query_text': row[3],
+                'search_strategy': row[4],
+                'top_n': row[5],
+                'returned_doc_ids': json.loads(row[6]),
+                'scores': json.loads(row[7]),
+                'user': row[8],
+            })
+
+        active_courses = set()
+        for metric in metrics:
+            if metric.get('course_code'):
+                active_courses.add(metric['course_code'])
+            elif metric.get('course_name'):
+                active_courses.add(metric['course_name'])
+
+        feedback_counts = {'up': 0, 'down': 0}
+        feedback_total = 0
+        if role != 'profesor' or course_ids:
+            feedback_query = 'SELECT feedback_value, COUNT(*) FROM agent_chat_feedback'
+            feedback_params = []
+            if role == 'profesor':
+                placeholders = ', '.join('?' for _ in course_ids)
+                feedback_query += f' WHERE course_id IN ({placeholders})'
+                feedback_params = course_ids
+            feedback_query += ' GROUP BY feedback_value'
+            c.execute(feedback_query, tuple(feedback_params))
+            for value, count in c.fetchall():
+                if value in feedback_counts:
+                    feedback_counts[value] = count
+            feedback_total = feedback_counts['up'] + feedback_counts['down']
+
+        rating_distribution = {str(score): 0 for score in range(1, 6)}
+        rating_total = 0
+        rating_sum = 0
+        if role != 'profesor' or course_ids:
+            rating_query = 'SELECT rating_score, COUNT(*) FROM agent_chat_session_ratings'
+            rating_params = []
+            if role == 'profesor':
+                placeholders = ', '.join('?' for _ in course_ids)
+                rating_query += f' WHERE course_id IN ({placeholders})'
+                rating_params = course_ids
+            rating_query += ' GROUP BY rating_score'
+            c.execute(rating_query, tuple(rating_params))
+            for score, count in c.fetchall():
+                score_int = int(score)
+                rating_distribution[str(score_int)] = count
+                rating_total += count
+                rating_sum += score_int * count
+
+        rating_average = round(rating_sum / rating_total, 2) if rating_total else 0
+
+        suggestion_counts = {'aprobado': 0, 'rechazado': 0, 'pendiente': 0}
+        if role != 'profesor' or course_ids:
+            suggestion_query = 'SELECT estado, COUNT(*) FROM agent_suggestions'
+            suggestion_params = []
+            if role == 'profesor':
+                placeholders = ', '.join('?' for _ in course_ids)
+                suggestion_query += f' WHERE course_id IN ({placeholders})'
+                suggestion_params = course_ids
+            suggestion_query += ' GROUP BY estado'
+            c.execute(suggestion_query, tuple(suggestion_params))
+            for estado, count in c.fetchall():
+                if estado in suggestion_counts:
+                    suggestion_counts[estado] = count
+
+        response = {
+            'scope': {
+                'role': role,
+                'course_count': course_count,
+            },
+            'retrieval': {
+                'total': len(metrics),
+                'active_courses': len(active_courses),
+                'last_query_at': metrics[0]['timestamp'] if metrics else None,
+                'metrics': metrics,
+            },
+            'feedback': {
+                'up': feedback_counts['up'],
+                'down': feedback_counts['down'],
+                'total': feedback_total,
+                'ratio_up': round((feedback_counts['up'] / feedback_total) * 100, 1) if feedback_total else 0,
+            },
+            'session_ratings': {
+                'average': rating_average,
+                'total': rating_total,
+                'distribution': rating_distribution,
+            },
+            'suggestions': {
+                'aprobado': suggestion_counts['aprobado'],
+                'rechazado': suggestion_counts['rechazado'],
+                'pendiente': suggestion_counts['pendiente'],
+                'total': sum(suggestion_counts.values()),
+            },
+        }
+
+        return jsonify(response), 200
+
+    finally:
+
+        con.close()
+
+
 @app.route('/api/retrieval-metrics', methods=['GET'])
 @admin_required
 def get_retrieval_metrics():
     """Retorna las métricas de consultas realizadas (solo admin/profesor)."""
 
-    course_code = request.args.get('course_code', '').strip()
-    limit = min(int(request.args.get('limit', 50)), 200)
+    course_code_raw = request.args.get('course_code', '').strip()
+    raw_limit = request.args.get('limit', 50)
 
-    con = sqlite3.connect(DATABASE)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    limit = min(max(1, limit), 200)
+    normalized_course_code = normalize_course_code(course_code_raw)
+
+    con = get_db_connection()
     c = con.cursor()
 
-    if course_code:
-        c.execute('''SELECT timestamp, course_name, course_code, query_text,
-                            search_strategy, top_n, returned_doc_ids, scores, user
-                     FROM retrieval_metrics
-                     WHERE course_code = ?
-                     ORDER BY timestamp DESC LIMIT ?''', (course_code, limit))
-    else:
-        c.execute('''SELECT timestamp, course_name, course_code, query_text,
-                            search_strategy, top_n, returned_doc_ids, scores, user
-                     FROM retrieval_metrics
-                     ORDER BY timestamp DESC LIMIT ?''', (limit,))
+    try:
 
-    rows = c.fetchall()
-    con.close()
+        user = session.get('user')
+        c.execute("SELECT role FROM users WHERE username = ?", (user,))
+        role_row = c.fetchone()
+
+        if not role_row:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        role = role_row[0]
+        course_codes = []
+
+        if role == 'profesor':
+            scope = _get_professor_course_scope(c, user)
+            course_codes = scope['course_codes']
+
+            if not course_codes:
+                return jsonify({'total': 0, 'metrics': []}), 200
+
+        if normalized_course_code:
+            if role == 'profesor' and normalized_course_code not in course_codes:
+                return jsonify({'total': 0, 'metrics': []}), 200
+
+            c.execute(
+                '''SELECT timestamp, course_name, course_code, query_text,
+                          search_strategy, top_n, returned_doc_ids, scores, user
+                   FROM retrieval_metrics
+                   WHERE UPPER(course_code) = ?
+                   ORDER BY timestamp DESC LIMIT ?''',
+                (normalized_course_code, limit)
+            )
+        else:
+            if role == 'profesor':
+                placeholders = ', '.join('?' for _ in course_codes)
+                c.execute(
+                    f'''SELECT timestamp, course_name, course_code, query_text,
+                              search_strategy, top_n, returned_doc_ids, scores, user
+                       FROM retrieval_metrics
+                       WHERE UPPER(course_code) IN ({placeholders})
+                       ORDER BY timestamp DESC LIMIT ?''',
+                    tuple(course_codes) + (limit,)
+                )
+            else:
+                c.execute(
+                    '''SELECT timestamp, course_name, course_code, query_text,
+                              search_strategy, top_n, returned_doc_ids, scores, user
+                       FROM retrieval_metrics
+                       ORDER BY timestamp DESC LIMIT ?''',
+                    (limit,)
+                )
+
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
 
     metrics = []
     for row in rows:
