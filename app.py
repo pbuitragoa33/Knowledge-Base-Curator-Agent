@@ -4802,7 +4802,7 @@ def agent_chat():
     # Resolver course_code desde la BD
     con = sqlite3.connect(DATABASE)
     c = con.cursor()
-    c.execute('SELECT course_code FROM courses WHERE id = ?', (course_id,))
+    c.execute('SELECT course_code, name FROM courses WHERE id = ?', (course_id,))
     row = c.fetchone()
     con.close()
 
@@ -4810,6 +4810,7 @@ def agent_chat():
         return jsonify({'error': 'Curso no encontrado'}), 404
 
     course_code = row[0]
+    course_name = row[1]
 
     # Guardar mensaje del profesor
     save_agent_chat_message(
@@ -4953,6 +4954,17 @@ def agent_chat():
         final_text,
         is_suggestion = is_suggestion,
         suggestion_id = suggestion_id,
+    )
+
+    # Registrar la consulta en retrieval_metrics para el dashboard
+    save_retrieval_metrics(
+        course_name=course_name,
+        course_code=course_code,
+        query_text=message,
+        strategy='semantic',
+        top_n=5,
+        results=threshold_results,
+        user=session['user'],
     )
 
     return jsonify({
