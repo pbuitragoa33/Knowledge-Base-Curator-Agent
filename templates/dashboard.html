@@ -32,6 +32,20 @@
             letter-spacing: 0.05em;
             border-bottom: 2px solid #e0e0e0;
         }
+
+        .dash-badge {
+            display: inline-block;
+            color: white;
+            font-size: 0.78em;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 12px;
+            white-space: nowrap;
+        }
+
+        .dash-badge.estado-pendiente  { background: #ffc107; color: #333; }
+        .dash-badge.estado-aprobado   { background: #28a745; }
+        .dash-badge.estado-rechazado  { background: #dc3545; }
     </style>
 </head>
 <body>
@@ -184,6 +198,14 @@
             </div>
         </div>
 
+        <div class="card dash-animate" style="animation-delay: 440ms;">
+            <h3>Sugerencias Generadas</h3>
+            <p class="dashboard-subtitle">Listado de sugerencias producidas por el agente de curaduría.</p>
+            <div id="suggestionsTableContainer">
+                <p class="loading">Cargando sugerencias...</p>
+            </div>
+        </div>
+
         <div class="card dashboard-activity-card dash-animate" style="animation-delay: 380ms;">
             <div class="dashboard-activity-header">
                 <div>
@@ -280,6 +302,56 @@
                 const value = values[String(score)] || 0;
                 return `<span class="dashboard-rating-chip">${score}/5: ${value}</span>`;
             }).join('');
+        }
+
+        const TIPO_BADGE = {
+            'redundancia':     { label: 'Redundancia',      color: '#fd7e14' },
+            'deactualizacion': { label: 'Desactualización', color: '#17a2b8' },
+            'conflicto':       { label: 'Conflicto',        color: '#dc3545' },
+        };
+
+        function renderSuggestionsTable(suggestions) {
+            const container = document.getElementById('suggestionsTableContainer');
+            if (!container) return;
+
+            if (!suggestions.length) {
+                container.innerHTML = '<p class="no-data">Sin sugerencias registradas.</p>';
+                return;
+            }
+
+            const rows = suggestions.map(s => {
+                const tipoCfg   = TIPO_BADGE[s.tipo] || { label: escapeHtml(s.tipo || '--'), color: '#6c757d' };
+                const tipoBadge = `<span class="dash-badge" style="background:${tipoCfg.color}">${tipoCfg.label}</span>`;
+
+                const estadoKey   = (s.estado || '').toLowerCase();
+                const estadoLabel = estadoKey ? estadoKey.charAt(0).toUpperCase() + estadoKey.slice(1) : '--';
+                const estadoBadge = `<span class="dash-badge estado-${escapeHtml(estadoKey)}">${escapeHtml(estadoLabel)}</span>`;
+
+                return `
+                    <tr>
+                        <td>${escapeHtml(s.course_name || '--')}</td>
+                        <td>${tipoBadge}</td>
+                        <td>${estadoBadge}</td>
+                        <td>${escapeHtml(s.created_at || '--')}</td>
+                        <td>${escapeHtml(s.reviewed_by || '—')}</td>
+                    </tr>`;
+            }).join('');
+
+            container.innerHTML = `
+                <div class="dashboard-docs-table-wrap">
+                    <table class="dashboard-docs-table">
+                        <thead>
+                            <tr>
+                                <th>Curso</th>
+                                <th>Tipo</th>
+                                <th>Estado</th>
+                                <th>Fecha</th>
+                                <th>Revisado por</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>`;
         }
 
         function renderDocsStatusTable(distribution) {
@@ -400,7 +472,24 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', loadDashboard);
+        async function loadSuggestions() {
+            const container = document.getElementById('suggestionsTableContainer');
+            try {
+                const response = await fetch(`/api/dashboard/suggestions?limit=50&ts=${Date.now()}`);
+                if (!response.ok) throw new Error('No fue posible cargar las sugerencias');
+                const payload = await response.json();
+                renderSuggestionsTable(Array.isArray(payload.suggestions) ? payload.suggestions : []);
+            } catch (error) {
+                if (container) {
+                    container.innerHTML = `<p class="error-message">Error: ${escapeHtml(error.message)}</p>`;
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadDashboard();
+            loadSuggestions();
+        });
     </script>
 </body>
 </html>
