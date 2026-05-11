@@ -46,6 +46,34 @@
         .dash-badge.estado-pendiente  { background: #ffc107; color: #333; }
         .dash-badge.estado-aprobado   { background: #28a745; }
         .dash-badge.estado-rechazado  { background: #dc3545; }
+
+        .dashboard-filter-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .dashboard-filter-label {
+            font-weight: 600;
+            color: #555;
+            white-space: nowrap;
+        }
+
+        .dashboard-filter-select {
+            padding: 8px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 0.95em;
+            font-family: inherit;
+            min-width: 220px;
+            transition: border-color 0.2s;
+        }
+
+        .dashboard-filter-select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
     </style>
 </head>
 <body>
@@ -73,6 +101,17 @@
                 </div>
             </div>
         </div>
+
+        {% if session.role == 'admin' %}
+        <div class="card dash-animate" style="animation-delay: 60ms;">
+            <div class="dashboard-filter-row">
+                <label for="courseFilter" class="dashboard-filter-label">Filtrar por curso</label>
+                <select id="courseFilter" class="dashboard-filter-select">
+                    <option value="">Todos los cursos</option>
+                </select>
+            </div>
+        </div>
+        {% endif %}
 
         <div class="dashboard-grid dash-animate" style="animation-delay: 80ms;">
             <div class="card dashboard-stat-card">
@@ -384,11 +423,30 @@
                 </div>`;
         }
 
-        async function loadDashboard() {
+        async function loadCourses() {
+            const select = document.getElementById('courseFilter');
+            if (!select) return;
+
+            try {
+                const response = await fetch('/api/courses');
+                if (!response.ok) throw new Error('Error al cargar cursos');
+                const courses = await response.json();
+                select.innerHTML = '<option value="">Todos los cursos</option>' +
+                    courses.map(c =>
+                        `<option value="${c.id}">${escapeHtml(c.name)}</option>`
+                    ).join('');
+            } catch (error) {
+                console.error('Error cargando cursos para el filtro:', error.message);
+            }
+        }
+
+        async function loadDashboard(courseId = null) {
             if (!activityList) return;
 
             try {
-                const response = await fetch(`/api/dashboard/metrics?limit=50&ts=${Date.now()}`);
+                const params = new URLSearchParams({ limit: 50, ts: Date.now() });
+                if (courseId) params.set('course_id', courseId);
+                const response = await fetch(`/api/dashboard/metrics?${params}`);
                 if (!response.ok) {
                     throw new Error('No fue posible cargar las metricas');
                 }
@@ -472,10 +530,12 @@
             }
         }
 
-        async function loadSuggestions() {
+        async function loadSuggestions(courseId = null) {
             const container = document.getElementById('suggestionsTableContainer');
             try {
-                const response = await fetch(`/api/dashboard/suggestions?limit=50&ts=${Date.now()}`);
+                const params = new URLSearchParams({ limit: 50, ts: Date.now() });
+                if (courseId) params.set('course_id', courseId);
+                const response = await fetch(`/api/dashboard/suggestions?${params}`);
                 if (!response.ok) throw new Error('No fue posible cargar las sugerencias');
                 const payload = await response.json();
                 renderSuggestionsTable(Array.isArray(payload.suggestions) ? payload.suggestions : []);
@@ -489,6 +549,16 @@
         document.addEventListener('DOMContentLoaded', () => {
             loadDashboard();
             loadSuggestions();
+            loadCourses();
+
+            const courseFilter = document.getElementById('courseFilter');
+            if (courseFilter) {
+                courseFilter.addEventListener('change', () => {
+                    const courseId = courseFilter.value || null;
+                    loadDashboard(courseId);
+                    loadSuggestions(courseId);
+                });
+            }
         });
     </script>
 </body>

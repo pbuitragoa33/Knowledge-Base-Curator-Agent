@@ -3968,6 +3968,14 @@ def get_dashboard_metrics():
 
     limit = min(max(1, limit), 200)
 
+    raw_course_id = request.args.get('course_id', '').strip()
+    filter_course_id = None
+    if raw_course_id:
+        try:
+            filter_course_id = int(raw_course_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': "El parametro 'course_id' debe ser un numero entero"}), 400
+
     con = get_db_connection()
     c = con.cursor()
 
@@ -3989,23 +3997,33 @@ def get_dashboard_metrics():
             course_codes = scope['course_codes']
             course_count = len(course_ids)
         else:
-            c.execute("SELECT COUNT(*) FROM courses")
-            count_row = c.fetchone()
-            course_count = count_row[0] if count_row else 0
+            if filter_course_id:
+                c.execute("SELECT id, course_code FROM courses WHERE id = ?", (filter_course_id,))
+                course_row = c.fetchone()
+                if not course_row:
+                    return jsonify({'error': 'Curso no encontrado'}), 404
+                course_ids   = [course_row[0]]
+                course_codes = [course_row[1].upper()]
+                course_count = 1
+            else:
+                course_ids   = []
+                course_codes = []
+                c.execute("SELECT COUNT(*) FROM courses")
+                count_row    = c.fetchone()
+                course_count = count_row[0] if count_row else 0
 
         metrics_rows = []
-        if role == 'profesor':
-            if course_codes:
-                placeholders = ', '.join('?' for _ in course_codes)
-                c.execute(
-                    f'''SELECT timestamp, course_name, course_code, query_text,
-                                search_strategy, top_n, returned_doc_ids, scores, user
-                         FROM retrieval_metrics
-                         WHERE UPPER(course_code) IN ({placeholders})
-                         ORDER BY timestamp DESC LIMIT ?''',
-                    tuple(course_codes) + (limit,)
-                )
-                metrics_rows = c.fetchall()
+        if course_codes:
+            placeholders = ', '.join('?' for _ in course_codes)
+            c.execute(
+                f'''SELECT timestamp, course_name, course_code, query_text,
+                            search_strategy, top_n, returned_doc_ids, scores, user
+                     FROM retrieval_metrics
+                     WHERE UPPER(course_code) IN ({placeholders})
+                     ORDER BY timestamp DESC LIMIT ?''',
+                tuple(course_codes) + (limit,)
+            )
+            metrics_rows = c.fetchall()
         else:
             c.execute(
                 '''SELECT timestamp, course_name, course_code, query_text,
@@ -4042,7 +4060,7 @@ def get_dashboard_metrics():
         if role != 'profesor' or course_ids:
             feedback_query = 'SELECT feedback_value, COUNT(*) FROM agent_chat_feedback'
             feedback_params = []
-            if role == 'profesor':
+            if course_ids:
                 placeholders = ', '.join('?' for _ in course_ids)
                 feedback_query += f' WHERE course_id IN ({placeholders})'
                 feedback_params = course_ids
@@ -4059,7 +4077,7 @@ def get_dashboard_metrics():
         if role != 'profesor' or course_ids:
             rating_query = 'SELECT rating_score, COUNT(*) FROM agent_chat_session_ratings'
             rating_params = []
-            if role == 'profesor':
+            if course_ids:
                 placeholders = ', '.join('?' for _ in course_ids)
                 rating_query += f' WHERE course_id IN ({placeholders})'
                 rating_params = course_ids
@@ -4077,7 +4095,7 @@ def get_dashboard_metrics():
         if role != 'profesor' or course_ids:
             suggestion_query = 'SELECT estado, COUNT(*) FROM agent_suggestions'
             suggestion_params = []
-            if role == 'profesor':
+            if course_ids:
                 placeholders = ', '.join('?' for _ in course_ids)
                 suggestion_query += f' WHERE course_id IN ({placeholders})'
                 suggestion_params = course_ids
@@ -4123,7 +4141,7 @@ def get_dashboard_metrics():
 
         # Distribución del estado de documentos
         doc_status_counts = {}
-        if role == 'profesor' and course_ids:
+        if course_ids:
             placeholders = ', '.join('?' for _ in course_ids)
             c.execute(
                 f'''SELECT co.status, COUNT(d.id) as doc_count
