@@ -35,6 +35,33 @@
             </div>
         </div>
 
+        <div class="dashboard-grid dash-animate" style="animation-delay: 80ms;">
+            <div class="card dashboard-stat-card">
+                <div class="dashboard-stat-header">
+                    <span class="dashboard-stat-label">Sugerencias Pendientes</span>
+                    <span class="dashboard-stat-tag">⏳</span>
+                </div>
+                <div class="dashboard-stat-value" id="kpiSuggestionsPending">--</div>
+                <p class="dashboard-stat-note">Sugerencias del agente sin revisar.</p>
+            </div>
+            <div class="card dashboard-stat-card">
+                <div class="dashboard-stat-header">
+                    <span class="dashboard-stat-label">Tasa de Aprobación</span>
+                    <span class="dashboard-stat-tag">✅</span>
+                </div>
+                <div class="dashboard-stat-value" id="kpiApprovalRate">--</div>
+                <p class="dashboard-stat-note">Porcentaje de sugerencias aprobadas vs. revisadas.</p>
+            </div>
+            <div class="card dashboard-stat-card">
+                <div class="dashboard-stat-header">
+                    <span class="dashboard-stat-label">Docs en Revisión</span>
+                    <span class="dashboard-stat-tag">📁</span>
+                </div>
+                <div class="dashboard-stat-value" id="kpiDocsInReview">--</div>
+                <p class="dashboard-stat-note">Documentos fuera del estado publicado.</p>
+            </div>
+        </div>
+
         <div class="dashboard-grid">
             <div class="card dashboard-stat-card dash-animate" style="animation-delay: 80ms;">
                 <div class="dashboard-stat-header">
@@ -154,6 +181,9 @@
         const suggestionsApproved = document.getElementById('metricSuggestionsApproved');
         const suggestionsRejected = document.getElementById('metricSuggestionsRejected');
         const suggestionsPending = document.getElementById('metricSuggestionsPending');
+        const kpiSuggestionsPending = document.getElementById('kpiSuggestionsPending');
+        const kpiApprovalRate       = document.getElementById('kpiApprovalRate');
+        const kpiDocsInReview       = document.getElementById('kpiDocsInReview');
 
         function escapeHtml(value) {
             const temp = document.createElement('div');
@@ -257,6 +287,23 @@
                 setText(suggestionsRejected, String(suggestions.rechazado || 0), '0');
                 setText(suggestionsPending, String(suggestions.pendiente || 0), '0');
 
+                // ── KPIs nuevos ───────────────────────────────────────────
+                setText(kpiSuggestionsPending, String(suggestions.pendiente || 0), '0');
+
+                const approvalPct = suggestions.porcentaje_aprobacion !== undefined
+                    ? `${suggestions.porcentaje_aprobacion}%`
+                    : '0%';
+                setText(kpiApprovalRate, approvalPct, '0%');
+
+                const docsDist     = ((payload.documents || {}).distribution) || {};
+                const hasDistinct  = Object.keys(docsDist).length > 0;
+                const docsInReview = hasDistinct
+                    ? Object.entries(docsDist)
+                        .filter(([status]) => status !== 'publicado')
+                        .reduce((sum, [, cnt]) => sum + cnt, 0)
+                    : ((payload.documents || {}).total || 0);
+                setText(kpiDocsInReview, String(docsInReview), '0');
+
                 renderActivityList(metrics);
             } catch (error) {
                 if (activityList) {
@@ -277,6 +324,9 @@
                 setText(suggestionsApproved, '--', '--');
                 setText(suggestionsRejected, '--', '--');
                 setText(suggestionsPending, '--', '--');
+                setText(kpiSuggestionsPending, '--', '--');
+                setText(kpiApprovalRate,       '--', '--');
+                setText(kpiDocsInReview,       '--', '--');
                 if (activityCount) {
                     activityCount.textContent = 'Sin datos';
                 }
