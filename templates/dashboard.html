@@ -8,6 +8,31 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        .dashboard-docs-table-wrap { overflow-x: auto; }
+
+        .dashboard-docs-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.92em;
+        }
+
+        .dashboard-docs-table th,
+        .dashboard-docs-table td {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+
+        .dashboard-docs-table th {
+            color: #555;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid #e0e0e0;
+        }
+    </style>
 </head>
 <body>
     <div class="container dashboard-page">
@@ -151,7 +176,15 @@
             </div>
         </div>
 
-        <div class="card dashboard-activity-card dash-animate" style="animation-delay: 320ms;">
+        <div class="card dash-animate" style="animation-delay: 320ms;">
+            <h3>Estado de Documentos</h3>
+            <p class="dashboard-subtitle">Distribución de documentos por estado en el sistema.</p>
+            <div id="docsStatusTable">
+                <p class="loading">Cargando documentos...</p>
+            </div>
+        </div>
+
+        <div class="card dashboard-activity-card dash-animate" style="animation-delay: 380ms;">
             <div class="dashboard-activity-header">
                 <div>
                     <h3>Actividad reciente</h3>
@@ -249,6 +282,36 @@
             }).join('');
         }
 
+        function renderDocsStatusTable(distribution) {
+            const container = document.getElementById('docsStatusTable');
+            if (!container) return;
+
+            const entries = Object.entries(distribution || {});
+
+            if (entries.length === 0) {
+                container.innerHTML = '<p class="no-data">Sin documentos registrados.</p>';
+                return;
+            }
+
+            const rows = entries
+                .map(([status, count]) => `
+                    <tr>
+                        <td>${escapeHtml(status)}</td>
+                        <td>${escapeHtml(String(count))}</td>
+                    </tr>`)
+                .join('');
+
+            container.innerHTML = `
+                <div class="dashboard-docs-table-wrap">
+                    <table class="dashboard-docs-table">
+                        <thead>
+                            <tr><th>Estado</th><th>Cantidad</th></tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>`;
+        }
+
         async function loadDashboard() {
             if (!activityList) return;
 
@@ -304,6 +367,8 @@
                     : ((payload.documents || {}).total || 0);
                 setText(kpiDocsInReview, String(docsInReview), '0');
 
+                renderDocsStatusTable((payload.documents || {}).distribution || {});
+
                 renderActivityList(metrics);
             } catch (error) {
                 if (activityList) {
@@ -327,6 +392,8 @@
                 setText(kpiSuggestionsPending, '--', '--');
                 setText(kpiApprovalRate,       '--', '--');
                 setText(kpiDocsInReview,       '--', '--');
+                const docsContainer = document.getElementById('docsStatusTable');
+                if (docsContainer) docsContainer.innerHTML = '<p class="no-data">Sin documentos registrados.</p>';
                 if (activityCount) {
                     activityCount.textContent = 'Sin datos';
                 }
