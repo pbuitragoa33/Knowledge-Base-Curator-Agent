@@ -4886,6 +4886,8 @@ def agent_chat():
                 tool_call_id = tool_call['id']
 
                 if tool_name in tools_by_name:
+                    if tool_name == 'search_course_documents' and 'course_id' not in tool_args:
+                        tool_args = {**tool_args, 'course_id': course_id}
                     tool_result = str(tools_by_name[tool_name].invoke(tool_args))
 
                     # Extraer nombres de archivo del output formateado de la tool
