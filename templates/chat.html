@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat con el Agente - {{ course }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous">
     <style>
         /* ── Layout de página completa ───────────────────────────────────── */
         .container.chat-outer {
-            height: calc(100vh - 40px); /* 2 × 20px de padding del body */
+            height: calc(100vh - (var(--page-padding) * 2));
             display: flex;
             flex-direction: column;
         }
@@ -32,18 +33,18 @@
 
         .chat-card-header {
             padding: 14px 24px;
-            border-bottom: 1px solid #e0e0e0;
+            border-bottom: 1px solid var(--border);
             flex-shrink: 0;
         }
 
         .chat-card-header h2 {
-            color: #333;
+            color: var(--text-primary);
             font-size: 1.1em;
             margin: 0 0 2px 0;
         }
 
         .chat-card-header p {
-            color: #999;
+            color: var(--text-secondary);
             font-size: 0.85em;
             margin: 0;
         }
@@ -61,7 +62,7 @@
         .chat-messages::-webkit-scrollbar { width: 6px; }
         .chat-messages::-webkit-scrollbar-track { background: transparent; }
         .chat-messages::-webkit-scrollbar-thumb { background: #ddd; border-radius: 10px; }
-        .chat-messages::-webkit-scrollbar-thumb:hover { background: #667eea; }
+        .chat-messages::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
         /* ── Estado vacío ────────────────────────────────────────────────── */
         .chat-empty {
@@ -70,7 +71,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            color: #bbb;
+            color: var(--text-secondary);
             gap: 10px;
             text-align: center;
             padding: 40px;
@@ -103,21 +104,21 @@
         }
 
         .bubble-user {
-            background: #667eea;
+            background: var(--accent);
             color: white;
             border-bottom-right-radius: 4px;
         }
 
         .bubble-agent {
-            background: #f0f0f5;
-            color: #333;
+            background: var(--surface-alt);
+            color: var(--text-primary);
             border-bottom-left-radius: 4px;
         }
 
         .bubble-error {
-            background: #f8d7da;
-            color: #721c24;
-            border-left: 3px solid #dc3545;
+            background: var(--danger-soft);
+            color: #7F1D1D;
+            border-left: 3px solid var(--danger);
             border-bottom-left-radius: 4px;
         }
 
@@ -128,14 +129,14 @@
             gap: 8px;
             margin-top: 10px;
             font-size: 0.85em;
-            color: #666;
+            color: var(--text-secondary);
         }
 
         .feedback-btn {
             width: 32px;
             height: 32px;
             border-radius: 999px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border);
             background: white;
             cursor: pointer;
             display: inline-flex;
@@ -145,25 +146,25 @@
         }
 
         .feedback-btn.selected {
-            background: #667eea;
-            border-color: #667eea;
+            background: var(--accent);
+            border-color: var(--accent);
             color: white;
         }
 
         .feedback-status {
-            color: #28a745;
+            color: var(--accent);
             font-weight: 600;
         }
 
         .chat-suggestion-card {
             max-width: 72%;
             background: #fff;
-            border: 1px solid #d7dde8;
-            border-left: 4px solid #2f80ed;
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--accent);
             border-radius: 8px;
             padding: 14px 16px;
-            color: #283044;
-            box-shadow: 0 4px 16px rgba(31, 45, 61, 0.12);
+            color: var(--text-primary);
+            box-shadow: var(--shadow-sm);
         }
 
         .chat-suggestion-top {
@@ -193,23 +194,23 @@
         }
 
         .chat-suggestion-badge {
-            background: #eef4ff;
-            color: #235aaf;
+            background: #ECFDF5;
+            color: var(--accent-strong);
         }
 
         .chat-suggestion-status {
-            background: #f1f3f5;
-            color: #596275;
+            background: var(--surface-alt);
+            color: var(--text-secondary);
         }
 
         .chat-suggestion-status.aprobado {
-            background: #e8f5ec;
-            color: #1f7a3d;
+            background: #ECFDF5;
+            color: var(--accent-strong);
         }
 
         .chat-suggestion-status.rechazado {
-            background: #fdecec;
-            color: #a52929;
+            background: var(--danger-soft);
+            color: #7F1D1D;
         }
 
         .chat-suggestion-text {
@@ -226,7 +227,7 @@
             display: block;
             margin-bottom: 3px;
             font-size: 0.78em;
-            color: #637083;
+            color: var(--text-secondary);
             text-transform: uppercase;
             letter-spacing: 0.04em;
         }
@@ -240,7 +241,7 @@
         .chat-suggestion-evidence {
             font-family: 'Courier New', monospace;
             font-size: 0.9em;
-            color: #3f4b5f;
+            color: var(--text-secondary);
         }
 
         .chat-suggestion-actions {
@@ -248,7 +249,7 @@
             gap: 10px;
             margin-top: 14px;
             padding-top: 12px;
-            border-top: 1px solid #edf0f5;
+            border-top: 1px solid var(--border);
         }
 
         .chat-suggestion-actions .btn {
@@ -260,7 +261,7 @@
         .suggestion-resolution-backdrop {
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.45);
+            background: rgba(15, 23, 42, 0.45);
             display: none;
             align-items: center;
             justify-content: center;
@@ -278,7 +279,7 @@
             padding: 20px 22px;
             width: 100%;
             max-width: 500px;
-            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+            box-shadow: var(--shadow-md);
         }
 
         .suggestion-resolution-card h3 {
@@ -287,7 +288,7 @@
 
         .suggestion-resolution-card p {
             margin: 0 0 16px 0;
-            color: #666;
+            color: var(--text-secondary);
         }
 
         .suggestion-resolution-card label {
@@ -300,7 +301,7 @@
         .suggestion-resolution-card select,
         .suggestion-resolution-card textarea {
             width: 100%;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border);
             border-radius: 8px;
             padding: 10px 12px;
             font-size: 0.95em;
@@ -312,7 +313,7 @@
 
         .suggestion-resolution-status {
             margin-top: 10px;
-            color: #dc3545;
+            color: var(--danger);
             font-weight: 600;
         }
 
@@ -327,7 +328,7 @@
         .exit-rating-backdrop {
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.45);
+            background: rgba(15, 23, 42, 0.45);
             display: none;
             align-items: center;
             justify-content: center;
@@ -345,7 +346,7 @@
             padding: 20px 22px;
             width: 100%;
             max-width: 420px;
-            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+            box-shadow: var(--shadow-md);
         }
 
         .exit-rating-card h3 {
@@ -354,7 +355,7 @@
 
         .exit-rating-card p {
             margin: 0 0 16px 0;
-            color: #666;
+            color: var(--text-secondary);
         }
 
         .exit-rating-buttons {
@@ -367,7 +368,7 @@
             width: 36px;
             height: 36px;
             border-radius: 999px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border);
             background: white;
             cursor: pointer;
             display: inline-flex;
@@ -377,14 +378,14 @@
         }
 
         .exit-rating-btn.selected {
-            background: #667eea;
-            border-color: #667eea;
+            background: var(--accent);
+            border-color: var(--accent);
             color: white;
         }
 
         .exit-rating-status {
             margin-top: 10px;
-            color: #28a745;
+            color: var(--accent);
             font-weight: 600;
         }
 
@@ -400,7 +401,7 @@
             display: flex;
             gap: 5px;
             padding: 14px 18px;
-            background: #f0f0f5;
+            background: var(--surface-alt);
             border-radius: 18px;
             border-bottom-left-radius: 4px;
             align-items: center;
@@ -409,7 +410,7 @@
         .typing-dot {
             width: 8px;
             height: 8px;
-            background: #aaa;
+            background: #94A3B8;
             border-radius: 50%;
             animation: typingBounce 1.2s infinite ease-in-out;
         }
@@ -430,7 +431,7 @@
 
         .sources-details summary {
             cursor: pointer;
-            color: #667eea;
+            color: var(--accent);
             font-weight: 700;
             user-select: none;
             list-style: none;
@@ -448,7 +449,7 @@
         }
 
         .sources-list li {
-            color: #555;
+            color: var(--text-secondary);
             font-family: 'Courier New', monospace;
             font-size: 0.9em;
         }
@@ -459,7 +460,7 @@
             gap: 10px;
             align-items: center;
             padding: 14px 20px;
-            border-top: 2px solid #f0f0f0;
+            border-top: 1px solid var(--border);
             flex-shrink: 0;
             background: white;
         }
@@ -467,7 +468,7 @@
         .chat-input {
             flex: 1;
             padding: 11px 18px;
-            border: 2px solid #e0e0e0;
+            border: 1px solid var(--border);
             border-radius: 24px;
             font-size: 1em;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -476,8 +477,8 @@
         }
 
         .chat-input:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.15);
         }
 
         .chat-input:disabled {
@@ -496,26 +497,30 @@
     </style>
 </head>
 <body>
-    <div class="container chat-outer">
-        <div class="header-top">
-            <a id="backToCourseBtn" href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small">← Volver al Curso</a>
-            <h1>Chat con el Agente</h1>
-            <div class="user-info">
-                <span>👤 {{ session.get('user', 'Usuario') }}</span>
-                <button id="resetChatBtn" class="btn btn-secondary btn-small" type="button">Reiniciar Chat</button>
-                <a id="logoutBtn" href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+    <main class="container chat-outer">
+        <header class="header-top">
+            <div class="brand">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="lectIA" class="brand-logo">
+                <span class="brand-name">lectIA</span>
             </div>
-        </div>
+            <a id="backToCourseBtn" href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small"><i class="fa-solid fa-arrow-left"></i> Volver al Curso</a>
+            <h1>Chat con el Agente</h1>
+            <nav class="user-info">
+                <span><i class="fa-regular fa-user"></i> {{ session.get('user', 'Usuario') }}</span>
+                <button id="resetChatBtn" class="btn btn-secondary btn-small" type="button"><i class="fa-solid fa-rotate"></i> Reiniciar Chat</button>
+                <a id="logoutBtn" href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </nav>
+        </header>
 
         <div class="chat-card">
             <div class="chat-card-header">
-                <h2>🤖 Agente de Curaduría — {{ course }}</h2>
+                <h2><i class="fa-solid fa-robot"></i> Agente de Curaduría — {{ course }}</h2>
                 <p>Realiza preguntas sobre los documentos indexados del curso.</p>
             </div>
 
             <div class="chat-messages" id="chatMessages">
                 <div class="chat-empty" id="chatEmpty">
-                    <span class="chat-empty-icon">💬</span>
+                    <span class="chat-empty-icon"><i class="fa-regular fa-message"></i></span>
                     <p>Escribe tu primera pregunta para comenzar.</p>
                 </div>
             </div>
@@ -531,7 +536,7 @@
                 <button id="sendBtn" class="btn btn-primary chat-send-btn">Enviar</button>
             </div>
         </div>
-    </div>
+    </main>
 
     <div class="exit-rating-backdrop" id="exitRatingModal" aria-hidden="true">
         <div class="exit-rating-card" role="dialog" aria-modal="true" aria-labelledby="exitRatingTitle">
@@ -649,7 +654,7 @@
             const items = sources.map(s => `<li>${escapeHtml(s)}</li>`).join('');
             return `
                 <details class="sources-details">
-                    <summary>📄 Fuentes consultadas (${sources.length})</summary>
+                    <summary><i class="fa-regular fa-file-lines"></i> Fuentes consultadas (${sources.length})</summary>
                     <ul class="sources-list">${items}</ul>
                 </details>`;
         }
@@ -658,8 +663,8 @@
             return `
                 <div class="agent-feedback">
                     <span>Valorar respuesta:</span>
-                    <button class="feedback-btn" type="button" data-value="up" aria-label="Pulgar arriba">👍</button>
-                    <button class="feedback-btn" type="button" data-value="down" aria-label="Pulgar abajo">👎</button>
+                    <button class="feedback-btn" type="button" data-value="up" aria-label="Pulgar arriba"><i class="fa-regular fa-thumbs-up"></i></button>
+                    <button class="feedback-btn" type="button" data-value="down" aria-label="Pulgar abajo"><i class="fa-regular fa-thumbs-down"></i></button>
                     <span class="feedback-status" aria-live="polite"></span>
                 </div>`;
         }

@@ -5,15 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - Curador de Conocimiento Asistido</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous">
 </head>
 <body>
-    <div class="container">
-        <div class="login-container">
-            <div class="login-card">
-                <div class="login-header">
+    <main class="container auth-page">
+        <section class="login-container">
+            <article class="login-card">
+                <header class="login-header">
+                    <div class="brand auth-brand">
+                        <img src="{{ url_for('static', filename='logo.png') }}" alt="lectIA" class="brand-logo">
+                        <span class="brand-name">lectIA</span>
+                    </div>
                     <h1>Gestor de Subidas</h1>
                     <p>Inicia sesión para continuar</p>
-                </div>
+                </header>
 
                 {% if error %}
                     <div class="error-message">{{ error }}</div>
@@ -34,8 +39,8 @@
                 </form>
 
                 <div class="login-footer">
-                    <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #ecf0f1;">
-                        <p style="margin-bottom: 10px;">¿No tienes cuenta? <a href="{{ url_for('signup') }}" style="color: #3498db; font-weight: 500;">Créala aquí</a></p>
+                    <div class="login-divider">
+                        <p>¿No tienes cuenta? <a href="{{ url_for('signup') }}" class="text-link">Créala aquí</a></p>
                     </div>
                     <p>Credenciales de demostración:</p>
                     <div class="credentials">
@@ -53,8 +58,8 @@
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
-    </div>
+            </article>
+        </section>
+    </main>
 </body>
 </html>

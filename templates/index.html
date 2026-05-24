@@ -5,21 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Curador de Conocimiento Asistido - Seleccionar Shelf</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous">
 </head>
 <body>
-    <div class="container">
-        <div class="header-top">
+    <main class="container">
+        <header class="header-top">
+            <div class="brand">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="lectIA" class="brand-logo">
+                <span class="brand-name">lectIA</span>
+            </div>
             <h1>Curador de Conocimiento Asistido</h1>
-            <div class="user-info">
+            <nav class="user-info">
                 <span>Usuario: {{ session.user }} ({{ session.role }})</span>
                 {% if session.role in ['admin', 'profesor'] %}
                 <a href="/dashboard" class="btn btn-dashboard btn-small">Dashboard</a>
                 {% endif %}
-                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesion</a>
-            </div>
-        </div>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </nav>
+        </header>
 
-        <div class="card selection-card">
+        <section class="card selection-card">
             <h2>Seleccionar Curso</h2>
             <p class="subtitle">Por favor, selecciona un shelf para continuar</p>
 
@@ -32,7 +37,7 @@
             </button>
 
             {% if session.role in ['admin', 'profesor'] %}
-            <div class="admin-section">
+            <section class="admin-section">
                 {% if session.role == 'admin' %}
                 <h3>Administración de Shelves</h3>
 
@@ -63,10 +68,10 @@
                 {% endif %}
                 
                 <div id="message" class="message"></div>
-            </div>
+            </section>
             {% endif %}
-        </div>
-    </div>
+        </section>
+    </main>
 
     <script>
         let selectedCourse = null;
@@ -102,14 +107,14 @@
                     <div class="course-option" data-course="${encodeURIComponent(course.name)}">
                         <div class="course-header">
                             <div class="course-content">
-                                <div class="course-icon">[C]</div>
+                                <div class="course-icon"><i class="fa-regular fa-folder-open"></i></div>
                                 <div class="course-text">
                                     <h3>${escapeHtml(course.name)}</h3>
                                     <p class="course-meta">ID: ${course.id} | Codigo: ${escapeHtml(course.course_code)}</p>
                                     <p class="course-meta">Docente: ${escapeHtml(course.responsible_teacher)} | Estado: ${escapeHtml(formatStatus(course.status))}</p>
                                 </div>
                             </div>
-                            ${isAdmin === 'true' ? `<button class="btn-delete-course" type="button" data-course="${encodeURIComponent(course.name)}">X</button>` : ''}
+                            ${isAdmin === 'true' ? `<button class="btn-delete-course" type="button" data-course="${encodeURIComponent(course.name)}" aria-label="Eliminar curso"><i class="fa-regular fa-trash-can"></i></button>` : ''}
                         </div>
                     </div>
                 `).join('');

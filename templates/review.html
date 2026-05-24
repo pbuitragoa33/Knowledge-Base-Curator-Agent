@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Revisión de Sugerencias - {{ course }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous">
     <style>
         /* Badges de tipo */
         .suggestion-badge {
@@ -25,11 +26,11 @@
             align-items: center;
             margin-bottom: 16px;
             padding-bottom: 12px;
-            border-bottom: 1px solid #e0e0e0;
+            border-bottom: 1px solid var(--border);
         }
 
         .suggestion-date {
-            color: #999;
+            color: var(--text-secondary);
             font-size: 0.85em;
         }
 
@@ -40,7 +41,7 @@
 
         .suggestion-field strong {
             display: block;
-            color: #555;
+            color: var(--text-secondary);
             font-size: 0.85em;
             text-transform: uppercase;
             letter-spacing: 0.05em;
@@ -48,7 +49,7 @@
         }
 
         .suggestion-field p {
-            color: #333;
+            color: var(--text-primary);
             line-height: 1.5;
             margin: 0;
             white-space: pre-wrap;
@@ -57,10 +58,10 @@
         .evidence-ids {
             font-family: 'Courier New', monospace;
             font-size: 0.9em;
-            background: #f0f0f0;
+            background: var(--surface-alt);
             padding: 6px 10px;
             border-radius: 4px;
-            color: #764ba2;
+            color: var(--text-primary);
         }
 
         /* Fila de botones: anula el width: 100% global */
@@ -69,7 +70,7 @@
             gap: 12px;
             margin-top: 20px;
             padding-top: 16px;
-            border-top: 1px solid #e0e0e0;
+            border-top: 1px solid var(--border);
         }
 
         .suggestion-actions .btn {
@@ -80,7 +81,7 @@
 
         /* Tarjetas con borde izquierdo de acento */
         .suggestion-card {
-            border-left: 4px solid #667eea;
+            border-left: 4px solid var(--accent);
         }
 
         /* Historial */
@@ -114,7 +115,7 @@
         .history-table td {
             text-align: left;
             padding: 10px 12px;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border);
             vertical-align: top;
         }
 
@@ -127,14 +128,14 @@
             color: white;
         }
 
-        .history-status.aprobado { background: #28a745; }
-        .history-status.rechazado { background: #dc3545; }
+        .history-status.aprobado { background: #A7F3D0; color: #065F46; }
+        .history-status.rechazado { background: #FECACA; color: #7F1D1D; }
 
         /* Modal de feedback */
         .modal-backdrop {
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.45);
+            background: rgba(15, 23, 42, 0.45);
             display: none;
             align-items: center;
             justify-content: center;
@@ -152,7 +153,7 @@
             padding: 20px 22px;
             width: 100%;
             max-width: 520px;
-            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+            box-shadow: var(--shadow-md);
         }
 
         .modal-card h3 {
@@ -161,7 +162,7 @@
 
         .modal-card p {
             margin: 0 0 16px 0;
-            color: #666;
+            color: var(--text-secondary);
         }
 
         .modal-card label {
@@ -174,7 +175,7 @@
         .modal-select,
         .modal-card textarea {
             width: 100%;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border);
             border-radius: 8px;
             padding: 10px 12px;
             font-size: 0.95em;
@@ -186,7 +187,7 @@
 
         .feedback-hint {
             font-size: 0.85em;
-            color: #888;
+            color: var(--text-secondary);
             margin-top: 6px;
         }
 
@@ -227,17 +228,21 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header-top">
-            <a href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small">← Volver al Curso</a>
-            <h1>Revisión de Sugerencias</h1>
-            <div class="user-info">
-                <span>👤 {{ session.get('user', 'Usuario') }}</span>
-                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+    <main class="container">
+        <header class="header-top">
+            <div class="brand">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="lectIA" class="brand-logo">
+                <span class="brand-name">lectIA</span>
             </div>
-        </div>
+            <a href="{{ url_for('upload_page', course=course) }}" class="btn btn-secondary btn-small"><i class="fa-solid fa-arrow-left"></i> Volver al Curso</a>
+            <h1>Revisión de Sugerencias</h1>
+            <nav class="user-info">
+                <span><i class="fa-regular fa-user"></i> {{ session.get('user', 'Usuario') }}</span>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </nav>
+        </header>
 
-        <div class="card">
+        <section class="card">
             <div class="review-card-header">
                 <div class="review-card-copy">
                     <h2>Sugerencias Pendientes — {{ course }}</h2>
@@ -246,25 +251,25 @@
                     </p>
                 </div>
                 <div class="review-card-actions">
-                    <a href="{{ url_for('export_agent_suggestions', course_id=course_id) }}" class="btn btn-success btn-small">Exportar Plan de Acción</a>
+                    <a href="{{ url_for('export_agent_suggestions', course_id=course_id) }}" class="btn btn-success btn-small"><i class="fa-regular fa-file-lines"></i> Exportar Plan de Acción</a>
                 </div>
             </div>
             <div id="suggestionsContainer">
                 <p class="loading">Cargando sugerencias...</p>
             </div>
-        </div>
+        </section>
 
-        <div class="card">
+        <section class="card">
             <div class="history-header">
                 <h2>Historial de Sugerencias</h2>
-                <button id="toggleHistoryBtn" class="btn btn-secondary btn-small">Ver Historial</button>
+                <button id="toggleHistoryBtn" class="btn btn-secondary btn-small"><i class="fa-regular fa-clock"></i> Ver Historial</button>
             </div>
             <p class="subtitle-sm">
                 Consulta las sugerencias ya gestionadas (aprobadas o rechazadas).
             </p>
             <div id="historyContainer" class="history-container"></div>
-        </div>
-    </div>
+        </section>
+    </main>
 
     <div class="modal-backdrop" id="feedbackModal" aria-hidden="true">
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
@@ -356,8 +361,8 @@
                         </div>
                     </div>
                     <div class="suggestion-actions">
-                        <button class="btn btn-success" onclick="openResolveModal(${s.id}, 'aprobado', this)">✓ Aprobar</button>
-                        <button class="btn btn-danger"  onclick="openResolveModal(${s.id}, 'rechazado', this)">✕ Rechazar</button>
+                        <button class="btn btn-success" onclick="openResolveModal(${s.id}, 'aprobado', this)"><i class="fa-regular fa-circle-check"></i> Aprobar</button>
+                        <button class="btn btn-danger"  onclick="openResolveModal(${s.id}, 'rechazado', this)"><i class="fa-regular fa-circle-xmark"></i> Rechazar</button>
                     </div>
                 </div>
             `;
@@ -457,7 +462,9 @@
         function toggleHistory() {
             historyVisible = !historyVisible;
             historyContainer.classList.toggle('visible', historyVisible);
-            toggleHistoryBtn.textContent = historyVisible ? 'Ocultar Historial' : 'Ver Historial';
+            toggleHistoryBtn.innerHTML = historyVisible
+                ? '<i class="fa-regular fa-eye-slash"></i> Ocultar Historial'
+                : '<i class="fa-regular fa-clock"></i> Ver Historial';
 
             if (historyVisible && !historyLoaded) {
                 historyLoaded = true;

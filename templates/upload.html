@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestor de Documentos - {{ course }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous">
     <style>
         .document-title-row {
             display: flex;
@@ -26,37 +27,43 @@
         }
 
         .document-status-badge.status-actualizado {
-            background: #e8f5ec;
-            color: #1f7a3d;
+            background: #ECFDF5;
+            color: var(--accent-strong);
         }
 
         .document-status-badge.status-en_revision {
-            background: #fff4df;
-            color: #8a5a00;
+            background: #FEF3C7;
+            color: #92400E;
         }
 
         .document-status-badge.status-aprobado {
-            background: #eef4ff;
-            color: #235aaf;
+            background: #E0F2FE;
+            color: #0369A1;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header-top">
-            <a href="/" class="btn btn-secondary btn-small">← Cambiar Curso</a>
-            {% if session.get('role') in ['admin', 'profesor'] %}
-            <a href="{{ url_for('chat_page', course=course) }}" class="btn btn-primary btn-small">💬 Chatear con el Agente</a>
-            {% endif %}
-            <h1>{{ course }}</h1>
-            <div class="user-info">
-                <span>👤 {{ session.get('user', 'Usuario') }}</span>
-                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+    <main class="container">
+        <header class="header-top">
+            <div class="brand">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="lectIA" class="brand-logo">
+                <span class="brand-name">lectIA</span>
             </div>
-        </div>
+            <div class="header-actions">
+                <a href="/" class="btn btn-secondary btn-small"><i class="fa-solid fa-arrow-left"></i> Cambiar Curso</a>
+                {% if session.get('role') in ['admin', 'profesor'] %}
+                <a href="{{ url_for('chat_page', course=course) }}" class="btn btn-primary btn-small"><i class="fa-regular fa-comments"></i> Chatear con el Agente</a>
+                {% endif %}
+            </div>
+            <h1>{{ course }}</h1>
+            <nav class="user-info">
+                <span><i class="fa-regular fa-user"></i> {{ session.get('user', 'Usuario') }}</span>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </nav>
+        </header>
 
-        <div id="contentContainer"></div>
-    </div>
+        <section id="contentContainer"></section>
+    </main>
 
     <!-- Modal para Historial -->
     <div id="historyModal" class="modal" style="display: none;">
@@ -100,7 +107,7 @@
                         <h2>Subir Documentos del Curso</h2>
                         <div id="dropZone" class="drop-zone">
                             <div class="drop-zone-content">
-                                <div class="drop-icon">📤</div>
+                                <div class="drop-icon"><i class="fa-solid fa-arrow-up-from-bracket"></i></div>
                                 <h3>Arrastra documentos aquí</h3>
                                 <p>o haz clic para seleccionar</p>
                                 <p class="drop-formats">Formatos permitidos: PDF, MD, DOCX, TXT</p>
@@ -110,8 +117,8 @@
                         <div id="fileList" class="file-list" style="display: none;">
                             <h3>Archivos a subir:</h3>
                             <div id="selectedFiles"></div>
-                            <button id="uploadBtn" class="btn btn-success">Subir Documentos</button>
-                            <button id="clearBtn" class="btn btn-danger">Limpiar</button>
+                        <button id="uploadBtn" class="btn btn-success"><i class="fa-regular fa-cloud-arrow-up"></i> Subir Documentos</button>
+                        <button id="clearBtn" class="btn btn-danger"><i class="fa-regular fa-trash-can"></i> Limpiar</button>
                         </div>
                         <div id="uploadProgress" class="upload-progress" style="display: none;">
                             <p>Subiendo documentos...</p>
@@ -226,7 +233,7 @@
                     <div class="file-item">
                         <span class="file-name">${file.name}</span>
                         <span class="file-size">${(file.size / 1024).toFixed(2)} KB</span>
-                        <button class="btn-remove" onclick="removeFile(${index})">✕</button>
+                        <button class="btn-remove" onclick="removeFile(${index})" aria-label="Quitar archivo"><i class="fa-regular fa-circle-xmark"></i></button>
                     </div>
                 `).join('');
                 fileList.style.display = 'block';
@@ -321,8 +328,8 @@
                                     <p class="document-date">${doc.upload_date}</p>
                                 </div>
                                 <div class="document-actions">
-                                    <button class="btn-icon" title="Ver historial" onclick="openHistoryModal('${doc.filename}', ${doc.id})">📋</button>
-                                    <button class="btn-delete-doc" title="Eliminar" onclick="deleteDocument(${doc.id})">🗑️</button>
+                                    <button class="btn-icon" title="Ver historial" onclick="openHistoryModal('${doc.filename}', ${doc.id})"><i class="fa-regular fa-clock"></i></button>
+                                    <button class="btn-delete-doc" title="Eliminar" onclick="deleteDocument(${doc.id})"><i class="fa-regular fa-trash-can"></i></button>
                                 </div>
                             </div>
                             <div class="document-comments-preview" id="comments-${doc.id}">
@@ -344,8 +351,8 @@
                                     <p class="document-date">${doc.upload_date}</p>
                                 </div>
                                 <div class="document-actions">
-                                    <button class="btn-icon" title="Ver historial" onclick="openHistoryModal('${doc.filename}', ${doc.id})">📋</button>
-                                    <button class="btn-icon" title="Descargar" onclick="downloadDocument(${doc.id})">⬇️</button>
+                                    <button class="btn-icon" title="Ver historial" onclick="openHistoryModal('${doc.filename}', ${doc.id})"><i class="fa-regular fa-clock"></i></button>
+                                    <button class="btn-icon" title="Descargar" onclick="downloadDocument(${doc.id})"><i class="fa-solid fa-arrow-down-to-line"></i></button>
                                 </div>
                             </div>
                         </div>

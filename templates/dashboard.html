@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard del Agente</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
@@ -21,16 +22,16 @@
         .dashboard-docs-table td {
             text-align: left;
             padding: 10px 12px;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border);
             vertical-align: top;
         }
 
         .dashboard-docs-table th {
-            color: #555;
+            color: var(--text-secondary);
             font-size: 0.85em;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            border-bottom: 2px solid #e0e0e0;
+            border-bottom: 2px solid var(--border);
         }
 
         .dash-badge {
@@ -43,9 +44,9 @@
             white-space: nowrap;
         }
 
-        .dash-badge.estado-pendiente  { background: #ffc107; color: #333; }
-        .dash-badge.estado-aprobado   { background: #28a745; }
-        .dash-badge.estado-rechazado  { background: #dc3545; }
+        .dash-badge.estado-pendiente  { background: #FDE68A; color: #78350F; }
+        .dash-badge.estado-aprobado   { background: #A7F3D0; color: #065F46; }
+        .dash-badge.estado-rechazado  { background: #FECACA; color: #7F1D1D; }
 
         .dashboard-filter-row {
             display: flex;
@@ -56,13 +57,13 @@
 
         .dashboard-filter-label {
             font-weight: 600;
-            color: #555;
+            color: var(--text-secondary);
             white-space: nowrap;
         }
 
         .dashboard-filter-select {
             padding: 8px 12px;
-            border: 2px solid #e0e0e0;
+            border: 1px solid var(--border);
             border-radius: 8px;
             font-size: 0.95em;
             font-family: inherit;
@@ -72,20 +73,24 @@
 
         .dashboard-filter-select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--accent);
         }
     </style>
 </head>
 <body>
-    <div class="container dashboard-page">
-        <div class="header-top">
+    <main class="container dashboard-page">
+        <header class="header-top">
+            <div class="brand">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="lectIA" class="brand-logo">
+                <span class="brand-name">lectIA</span>
+            </div>
             <h1>Dashboard del Agente</h1>
-            <div class="user-info">
+            <nav class="user-info">
                 <span>Usuario: {{ session.user }} ({{ session.role }})</span>
                 <a href="/" class="btn btn-secondary btn-small">Cursos</a>
-                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesion</a>
-            </div>
-        </div>
+                <a href="/logout" class="btn btn-secondary btn-small">Cerrar Sesión</a>
+            </nav>
+        </header>
 
         <div class="card dashboard-hero dash-animate" style="animation-delay: 0ms;">
             <div class="dashboard-hero-content">
@@ -117,7 +122,7 @@
             <div class="card dashboard-stat-card">
                 <div class="dashboard-stat-header">
                     <span class="dashboard-stat-label">Sugerencias Pendientes</span>
-                    <span class="dashboard-stat-tag">⏳</span>
+                    <span class="dashboard-stat-tag"><i class="fa-regular fa-clock"></i></span>
                 </div>
                 <div class="dashboard-stat-value" id="kpiSuggestionsPending">--</div>
                 <p class="dashboard-stat-note">Sugerencias del agente sin revisar.</p>
@@ -125,7 +130,7 @@
             <div class="card dashboard-stat-card">
                 <div class="dashboard-stat-header">
                     <span class="dashboard-stat-label">Tasa de Aprobación</span>
-                    <span class="dashboard-stat-tag">✅</span>
+                    <span class="dashboard-stat-tag"><i class="fa-regular fa-circle-check"></i></span>
                 </div>
                 <div class="dashboard-stat-value" id="kpiApprovalRate">--</div>
                 <p class="dashboard-stat-note">Porcentaje de sugerencias aprobadas vs. revisadas.</p>
@@ -133,7 +138,7 @@
             <div class="card dashboard-stat-card">
                 <div class="dashboard-stat-header">
                     <span class="dashboard-stat-label">Docs en Revisión</span>
-                    <span class="dashboard-stat-tag">📁</span>
+                    <span class="dashboard-stat-tag"><i class="fa-regular fa-folder-open"></i></span>
                 </div>
                 <div class="dashboard-stat-value" id="kpiDocsInReview">--</div>
                 <p class="dashboard-stat-note">Documentos fuera del estado publicado.</p>
@@ -257,7 +262,7 @@
                 <p class="loading">Cargando metricas...</p>
             </div>
         </div>
-    </div>
+    </main>
 
     <script>
         const activityList = document.getElementById('activityList');
