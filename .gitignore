@@ -437,6 +437,8 @@ tests/
 !tests/
 tests/*
 !tests/test_issue_58.py
+!tests/test_issue_61.py
+!tests/test_issue_62.py
 tests/.tmp_validation/
 tests/__pycache__/
 

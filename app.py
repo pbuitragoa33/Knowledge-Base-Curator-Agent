@@ -76,6 +76,14 @@ DOWNLOAD_DIR = os.environ.get('DOWNLOAD_DIR', os.path.expanduser('~/Downloads/Up
 ALLOWED_EXTENSIONS = {'pdf', 'md', 'docx', 'txt'}
 DATABASE = os.environ.get('DATABASE_PATH', 'database.db')
 VALID_SHELF_STATUS = {'borrador', 'publicado'}
+DOCUMENT_STATUS_UPDATED = 'ACTUALIZADO'
+DOCUMENT_STATUS_IN_REVIEW = 'EN_REVISION'
+DOCUMENT_STATUS_APPROVED = 'APROBADO'
+VALID_DOCUMENT_STATUS = {
+    DOCUMENT_STATUS_UPDATED,
+    DOCUMENT_STATUS_IN_REVIEW,
+    DOCUMENT_STATUS_APPROVED,
+}
 EMBEDDING_MODEL_NAME = os.environ.get('EMBEDDING_MODEL_NAME', DEFAULT_EMBEDDING_MODEL_NAME)
 EMBEDDING_BATCH_SIZE = _read_positive_int_env('EMBEDDING_BATCH_SIZE', DEFAULT_EMBEDDING_BATCH_SIZE)
 EMBEDDING_DEVICE = os.environ.get('EMBEDDING_DEVICE', DEFAULT_EMBEDDING_DEVICE)
@@ -384,6 +392,21 @@ def _ensure_courses_schema(con, cursor):
     con.execute("PRAGMA foreign_keys = ON")
 
 
+def _ensure_documents_status_column(cursor):
+
+    """Garantiza el estado de ciclo de vida de documentos existentes."""
+
+    cursor.execute("PRAGMA table_info(documents)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if 'status' not in columns:
+        cursor.execute(
+            f'''ALTER TABLE documents
+                ADD COLUMN status TEXT NOT NULL DEFAULT '{DOCUMENT_STATUS_UPDATED}'
+                CHECK(status IN ('{DOCUMENT_STATUS_UPDATED}', '{DOCUMENT_STATUS_IN_REVIEW}', '{DOCUMENT_STATUS_APPROVED}'))'''
+        )
+
+
 def get_db_connection():
 
     """Crea una conexión SQLite con llaves foráneas habilitadas."""
@@ -409,8 +432,11 @@ def _create_agent_traceability_tables(cursor):
                   sender_type TEXT NOT NULL CHECK(sender_type IN ('profesor', 'agente')),
                   sender_username TEXT,
                   message_text TEXT NOT NULL,
+                  is_suggestion INTEGER NOT NULL DEFAULT 0 CHECK(is_suggestion IN (0, 1)),
+                  suggestion_id INTEGER,
                   created_at TEXT NOT NULL,
                   FOREIGN KEY(course_id) REFERENCES courses(id),
+                  FOREIGN KEY(suggestion_id) REFERENCES agent_suggestions(id),
                   CHECK(
                       (sender_type = 'profesor' AND sender_username IS NOT NULL AND TRIM(sender_username) <> '')
                       OR
@@ -483,6 +509,18 @@ def _ensure_agent_suggestions_columns(cursor):
         cursor.execute("ALTER TABLE agent_suggestions ADD COLUMN score_manual INTEGER")
 
 
+def _ensure_agent_chat_history_columns(cursor):
+
+    cursor.execute("PRAGMA table_info(agent_chat_history)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if 'is_suggestion' not in columns:
+        cursor.execute("ALTER TABLE agent_chat_history ADD COLUMN is_suggestion INTEGER NOT NULL DEFAULT 0")
+
+    if 'suggestion_id' not in columns:
+        cursor.execute("ALTER TABLE agent_chat_history ADD COLUMN suggestion_id INTEGER")
+
+
 def _create_agent_prompts_table(cursor):
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS agent_prompts
@@ -503,6 +541,10 @@ def _create_agent_traceability_indexes(cursor):
     cursor.execute(
         '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_course_created_at
            ON agent_chat_history(course_id, created_at)'''
+    )
+    cursor.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_agent_chat_history_suggestion_id
+           ON agent_chat_history(suggestion_id)'''
     )
     cursor.execute(
         '''CREATE INDEX IF NOT EXISTS idx_agent_suggestions_course_created_at
@@ -637,7 +679,10 @@ def init_db():
                   upload_date TEXT NOT NULL,
                   filepath TEXT NOT NULL,
                   uploaded_by TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'ACTUALIZADO' CHECK(status IN ('ACTUALIZADO', 'EN_REVISION', 'APROBADO')),
                   FOREIGN KEY(course) REFERENCES courses(name))''')
+
+    _ensure_documents_status_column(c)
 
     # Tabla de Comentarios de Estudiantes
 
@@ -737,6 +782,7 @@ def init_db():
               user TEXT NOT NULL)''')
 
     _create_agent_traceability_tables(c)
+    _ensure_agent_chat_history_columns(c)
     _ensure_agent_suggestions_columns(c)
     _create_agent_traceability_indexes(c)
     _create_agent_prompts_table(c)
@@ -801,7 +847,15 @@ def _deserialize_evidence_ids(raw_value):
     return [str(item) for item in decoded]
 
 
-def save_agent_chat_message(course_id, conversation_id, sender_type, message_text, sender_username = None):
+def save_agent_chat_message(
+    course_id,
+    conversation_id,
+    sender_type,
+    message_text,
+    sender_username = None,
+    is_suggestion = False,
+    suggestion_id = None,
+):
 
     """Guarda un mensaje de trazabilidad entre profesor y agente."""
 
@@ -810,6 +864,8 @@ def save_agent_chat_message(course_id, conversation_id, sender_type, message_tex
     normalized_conversation_id = str(conversation_id or '').strip()
     normalized_message_text = str(message_text or '').strip()
     normalized_sender_type = str(sender_type or '').strip()
+    normalized_is_suggestion = 1 if normalized_sender_type == 'agente' and bool(is_suggestion) else 0
+    normalized_suggestion_id = int(suggestion_id) if normalized_is_suggestion and suggestion_id is not None else None
     con = get_db_connection()
     c = con.cursor()
 
@@ -817,14 +873,17 @@ def save_agent_chat_message(course_id, conversation_id, sender_type, message_tex
 
         c.execute(
             '''INSERT INTO agent_chat_history
-               (course_id, conversation_id, sender_type, sender_username, message_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)''',
+               (course_id, conversation_id, sender_type, sender_username, message_text,
+                is_suggestion, suggestion_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 int(course_id),
                 normalized_conversation_id,
                 normalized_sender_type,
                 normalized_sender_username,
                 normalized_message_text,
+                normalized_is_suggestion,
+                normalized_suggestion_id,
                 created_at,
             )
         )
@@ -888,12 +947,150 @@ def save_agent_suggestion(
                 normalized_score_manual,
             )
         )
+        suggestion_id = c.lastrowid
+
+        if normalized_estado == 'pendiente':
+
+            _mark_documents_in_review_for_evidence_ids(c, evidencia_ids)
+
+        else:
+
+            _refresh_document_statuses_for_evidence_ids(c, evidencia_ids)
+
         con.commit()
-        return c.lastrowid
+        return suggestion_id
 
     finally:
 
         con.close()
+
+
+def _build_agent_suggestion_payload(row):
+
+    if not row:
+
+        return None
+
+    return {
+        'id': row[0],
+        'course_id': row[1],
+        'conversation_id': row[2],
+        'tipo': row[3],
+        'input_context': row[4],
+        'razonamiento': row[5],
+        'evidencia_ids': _deserialize_evidence_ids(row[6]),
+        'estado': row[7],
+        'created_at': row[8],
+        'reviewed_at': row[9],
+        'reviewed_by': row[10],
+        'feedback_text': row[11],
+        'score_manual': row[12],
+    }
+
+
+def get_agent_suggestion(suggestion_id):
+
+    """Obtiene una sugerencia por id con el mismo contrato usado por las APIs."""
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            '''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                      evidencia_ids, estado, created_at, reviewed_at, reviewed_by,
+                      feedback_text, score_manual
+               FROM agent_suggestions
+               WHERE id = ?''',
+            (int(suggestion_id),)
+        )
+        row = c.fetchone()
+
+    finally:
+
+        con.close()
+
+    return _build_agent_suggestion_payload(row)
+
+
+def _list_agent_suggestions_by_ids(suggestion_ids):
+
+    normalized_ids = sorted({int(suggestion_id) for suggestion_id in suggestion_ids if suggestion_id is not None})
+
+    if not normalized_ids:
+
+        return {}
+
+    placeholders = ', '.join('?' for _ in normalized_ids)
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute(
+            f'''SELECT id, course_id, conversation_id, tipo, input_context, razonamiento,
+                       evidencia_ids, estado, created_at, reviewed_at, reviewed_by,
+                       feedback_text, score_manual
+                FROM agent_suggestions
+                WHERE id IN ({placeholders})''',
+            tuple(normalized_ids)
+        )
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
+
+    suggestions = {}
+
+    for row in rows:
+
+        payload = _build_agent_suggestion_payload(row)
+
+        if payload:
+
+            suggestions[int(payload['id'])] = payload
+
+    return suggestions
+
+
+def _build_agent_chat_history_payload(row):
+
+    is_suggestion = bool(row[7])
+    suggestion_id = row[8]
+
+    return {
+        'id': row[0],
+        'course_id': row[1],
+        'conversation_id': row[2],
+        'sender_type': row[3],
+        'sender_username': row[4],
+        'message_text': row[5],
+        'created_at': row[6],
+        'is_suggestion': is_suggestion,
+        'suggestion_id': suggestion_id,
+        'suggestion': None,
+    }
+
+
+def _attach_suggestions_to_chat_history(history):
+
+    suggestions_by_id = _list_agent_suggestions_by_ids(
+        entry.get('suggestion_id')
+        for entry in history
+        if entry.get('is_suggestion') and entry.get('suggestion_id') is not None
+    )
+
+    for entry in history:
+
+        suggestion_id = entry.get('suggestion_id')
+
+        if entry.get('is_suggestion') and suggestion_id is not None:
+
+            entry['suggestion'] = suggestions_by_id.get(int(suggestion_id))
+
+    return history
 
 
 def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
@@ -909,7 +1106,8 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
         if conversation_id:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ? AND conversation_id = ?
                    ORDER BY created_at ASC, id ASC
@@ -920,7 +1118,8 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
         else:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ?
                    ORDER BY created_at ASC, id ASC
@@ -934,21 +1133,9 @@ def list_agent_chat_history(course_id, conversation_id = None, limit = 100):
 
         con.close()
 
-    history = []
+    history = [_build_agent_chat_history_payload(row) for row in rows]
 
-    for row in rows:
-
-        history.append({
-            'id': row[0],
-            'course_id': row[1],
-            'conversation_id': row[2],
-            'sender_type': row[3],
-            'sender_username': row[4],
-            'message_text': row[5],
-            'created_at': row[6],
-        })
-
-    return history
+    return _attach_suggestions_to_chat_history(history)
 
 
 def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10):
@@ -964,7 +1151,8 @@ def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10
         if conversation_id:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ? AND conversation_id = ?
                    ORDER BY created_at DESC, id DESC
@@ -975,7 +1163,8 @@ def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10
         else:
 
             c.execute(
-                '''SELECT id, course_id, conversation_id, sender_type, sender_username, message_text, created_at
+                '''SELECT id, course_id, conversation_id, sender_type, sender_username,
+                          message_text, created_at, is_suggestion, suggestion_id
                    FROM agent_chat_history
                    WHERE course_id = ?
                    ORDER BY created_at DESC, id DESC
@@ -989,21 +1178,9 @@ def list_recent_agent_chat_history(course_id, conversation_id = None, limit = 10
 
         con.close()
 
-    history = []
+    history = [_build_agent_chat_history_payload(row) for row in reversed(rows)]
 
-    for row in reversed(rows):
-
-        history.append({
-            'id': row[0],
-            'course_id': row[1],
-            'conversation_id': row[2],
-            'sender_type': row[3],
-            'sender_username': row[4],
-            'message_text': row[5],
-            'created_at': row[6],
-        })
-
-    return history
+    return _attach_suggestions_to_chat_history(history)
 
 
 def list_agent_suggestions(course_id, estado = None, tipo = None, limit = 100):
@@ -1141,6 +1318,102 @@ def _extract_document_id_from_evidence_id(evidence_id):
     except (TypeError, ValueError):
 
         return None
+
+
+def _extract_document_ids_from_evidence_ids(evidence_ids):
+
+    """Obtiene document_id únicos desde una lista o JSON de evidencia."""
+
+    if isinstance(evidence_ids, str):
+
+        evidence_ids = _deserialize_evidence_ids(evidence_ids)
+
+    if evidence_ids is None:
+
+        evidence_ids = []
+
+    document_ids = set()
+
+    for evidence_id in evidence_ids:
+
+        document_id = _extract_document_id_from_evidence_id(evidence_id)
+
+        if document_id is not None:
+
+            document_ids.add(document_id)
+
+    return sorted(document_ids)
+
+
+def _set_documents_status(cursor, document_ids, status):
+
+    """Actualiza estado de documentos si hay ids válidos."""
+
+    normalized_status = str(status or '').strip().upper()
+
+    if normalized_status not in VALID_DOCUMENT_STATUS:
+
+        return
+
+    normalized_document_ids = [int(document_id) for document_id in document_ids if document_id is not None]
+
+    if not normalized_document_ids:
+
+        return
+
+    placeholders = ', '.join('?' for _ in normalized_document_ids)
+    cursor.execute(
+        f'''UPDATE documents
+            SET status = ?
+            WHERE id IN ({placeholders})''',
+        tuple([normalized_status] + normalized_document_ids),
+    )
+
+
+def _mark_documents_in_review_for_evidence_ids(cursor, evidence_ids):
+
+    document_ids = _extract_document_ids_from_evidence_ids(evidence_ids)
+    _set_documents_status(cursor, document_ids, DOCUMENT_STATUS_IN_REVIEW)
+
+
+def _refresh_document_statuses_for_evidence_ids(cursor, evidence_ids):
+
+    """Recalcula estado según sugerencias pendientes asociadas al documento."""
+
+    document_ids = _extract_document_ids_from_evidence_ids(evidence_ids)
+
+    for document_id in document_ids:
+
+        cursor.execute(
+            '''SELECT estado, evidencia_ids
+               FROM agent_suggestions
+               WHERE evidencia_ids LIKE ?''',
+            (f'%:{document_id}:%',)
+        )
+        suggestion_rows = cursor.fetchall()
+        has_associated_suggestion = False
+        has_pending_suggestion = False
+
+        for estado, raw_evidence_ids in suggestion_rows:
+
+            if document_id not in _extract_document_ids_from_evidence_ids(raw_evidence_ids):
+
+                continue
+
+            has_associated_suggestion = True
+
+            if str(estado or '').strip() == 'pendiente':
+
+                has_pending_suggestion = True
+                break
+
+        if has_pending_suggestion:
+
+            _set_documents_status(cursor, [document_id], DOCUMENT_STATUS_IN_REVIEW)
+
+        elif has_associated_suggestion:
+
+            _set_documents_status(cursor, [document_id], DOCUMENT_STATUS_APPROVED)
 
 
 def _resolve_export_document_lookup(cursor, course_name, suggestions):
@@ -1314,6 +1587,14 @@ def update_agent_suggestion_status(suggestion_id, estado, reviewed_by, score_man
     try:
 
         c.execute(
+            '''SELECT evidencia_ids
+               FROM agent_suggestions
+               WHERE id = ?''',
+            (int(suggestion_id),)
+        )
+        suggestion_row = c.fetchone()
+
+        c.execute(
             '''UPDATE agent_suggestions
                SET estado = ?, reviewed_at = ?, reviewed_by = ?, feedback_text = ?, score_manual = ?
                WHERE id = ?''',
@@ -1326,8 +1607,14 @@ def update_agent_suggestion_status(suggestion_id, estado, reviewed_by, score_man
                 int(suggestion_id),
             )
         )
+        updated = c.rowcount > 0
+
+        if updated and suggestion_row:
+
+            _refresh_document_statuses_for_evidence_ids(c, suggestion_row[0])
+
         con.commit()
-        return c.rowcount > 0
+        return updated
 
     finally:
 
@@ -1680,6 +1967,32 @@ def admin_required(f):
         return f(*args, **kwargs)
     
     return decorated_function
+
+
+def _get_professor_course_scope(cursor, professor_username):
+
+    cursor.execute(
+        '''SELECT id, name, course_code
+           FROM courses
+           WHERE responsible_teacher = ?
+           UNION
+           SELECT c.id, c.name, c.course_code
+           FROM courses c
+           INNER JOIN course_professors cp ON cp.course_name = c.name
+           WHERE cp.professor_username = ?''',
+        (professor_username, professor_username)
+    )
+
+    rows = cursor.fetchall()
+    course_ids = sorted({int(row[0]) for row in rows if row[0] is not None})
+    course_names = sorted({row[1] for row in rows if row[1]})
+    course_codes = sorted({normalize_course_code(row[2]) for row in rows if row[2]})
+
+    return {
+        'course_ids': course_ids,
+        'course_names': course_names,
+        'course_codes': course_codes,
+    }
 
 
 # --------------------------------------------------------
@@ -2100,6 +2413,34 @@ def index():
     return render_template('index.html', role = session.get('role'))
 
 
+# Dashboard de estadisticas
+
+@app.route('/dashboard')
+
+@login_required
+
+def dashboard():
+
+    con = sqlite3.connect(DATABASE)
+    c = con.cursor()
+    c.execute("SELECT role FROM users WHERE username = ?", (session.get('user'),))
+    result = c.fetchone()
+    con.close()
+
+    if not result:
+
+        session.clear()
+        return redirect(url_for('login'))
+
+    if result[0] not in ['admin', 'profesor']:
+
+        return redirect(url_for('index'))
+
+    session['role'] = result[0]
+
+    return render_template('dashboard.html')
+
+
 # Subir/crear Curso
 
 @app.route('/upload/<course>')
@@ -2212,14 +2553,22 @@ def upload_files():
                               (document_id, next_version, filename, file_hash, upload_date, filepath, user))
                     
                     # Actualizar el documento principal con la versión mós reciente
-                    c.execute('UPDATE documents SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ? WHERE id = ?',
-                              (file_hash, upload_date, filepath, user, document_id))
+                    c.execute(
+                        '''UPDATE documents
+                           SET file_hash = ?, upload_date = ?, filepath = ?, uploaded_by = ?, status = ?
+                           WHERE id = ?''',
+                        (file_hash, upload_date, filepath, user, DOCUMENT_STATUS_UPDATED, document_id)
+                    )
                 
                 else:
                     # Documento nuevo
                     doc_hash = generate_hash(str(datetime.now()) + filename + user)
-                    c.execute('INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)',
-                              (course, doc_hash, filename, file_hash, upload_date, filepath, user))
+                    c.execute(
+                        '''INSERT INTO documents
+                           (course, doc_hash, filename, file_hash, upload_date, filepath, uploaded_by, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (course, doc_hash, filename, file_hash, upload_date, filepath, user, DOCUMENT_STATUS_UPDATED)
+                    )
                     document_id = c.lastrowid
                     
                     # Insertar como versión 1
@@ -2257,7 +2606,8 @@ def upload_files():
                     'file_hash': file_hash,
                     'upload_date': upload_date,
                     'doc_hash': doc_hash,
-                    'document_id': document_id
+                    'document_id': document_id,
+                    'status': DOCUMENT_STATUS_UPDATED,
                 })
         
         if not uploaded_files:
@@ -2351,7 +2701,10 @@ def get_documents(course):
 
     con = sqlite3.connect(DATABASE)
     c = con.cursor()
-    c.execute('SELECT id, doc_hash, filename, file_hash, upload_date, uploaded_by FROM documents WHERE course = ? ORDER BY upload_date DESC',
+    c.execute('''SELECT id, doc_hash, filename, file_hash, upload_date, uploaded_by, status
+                 FROM documents
+                 WHERE course = ?
+                 ORDER BY upload_date DESC''',
               (course,))
     
     docs = c.fetchall()
@@ -2359,7 +2712,7 @@ def get_documents(course):
     
     documents = []
 
-    for doc_id, doc_hash, filename, file_hash, upload_date, uploaded_by in docs:
+    for doc_id, doc_hash, filename, file_hash, upload_date, uploaded_by, status in docs:
 
         documents.append({
             'id': doc_id,
@@ -2367,7 +2720,8 @@ def get_documents(course):
             'filename': filename,
             'file_hash': file_hash,
             'upload_date': upload_date,
-            'uploaded_by': uploaded_by
+            'uploaded_by': uploaded_by,
+            'status': status or DOCUMENT_STATUS_UPDATED,
         })
     
     return jsonify(documents)
@@ -3599,31 +3953,430 @@ def update_search_strategy(course_id):
         return jsonify({'error': str(e)}), 500
 
 # Consultar métricas de recuperación
+@app.route('/api/dashboard/metrics', methods=['GET'])
+@admin_required
+def get_dashboard_metrics():
+    """Retorna métricas agregadas para el dashboard (solo admin/profesor)."""
+
+    user = session.get('user')
+    raw_limit = request.args.get('limit', 50)
+
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    limit = min(max(1, limit), 200)
+
+    raw_course_id = request.args.get('course_id', '').strip()
+    filter_course_id = None
+    if raw_course_id:
+        try:
+            filter_course_id = int(raw_course_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': "El parametro 'course_id' debe ser un numero entero"}), 400
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute("SELECT role FROM users WHERE username = ?", (user,))
+        role_row = c.fetchone()
+
+        if not role_row:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        role = role_row[0]
+        course_ids = []
+        course_codes = []
+
+        if role == 'profesor':
+            scope = _get_professor_course_scope(c, user)
+            course_ids = scope['course_ids']
+            course_codes = scope['course_codes']
+            course_count = len(course_ids)
+        else:
+            if filter_course_id:
+                c.execute("SELECT id, course_code FROM courses WHERE id = ?", (filter_course_id,))
+                course_row = c.fetchone()
+                if not course_row:
+                    return jsonify({'error': 'Curso no encontrado'}), 404
+                course_ids   = [course_row[0]]
+                course_codes = [course_row[1].upper()]
+                course_count = 1
+            else:
+                course_ids   = []
+                course_codes = []
+                c.execute("SELECT COUNT(*) FROM courses")
+                count_row    = c.fetchone()
+                course_count = count_row[0] if count_row else 0
+
+        metrics_rows = []
+        if course_codes:
+            placeholders = ', '.join('?' for _ in course_codes)
+            c.execute(
+                f'''SELECT timestamp, course_name, course_code, query_text,
+                            search_strategy, top_n, returned_doc_ids, scores, user
+                     FROM retrieval_metrics
+                     WHERE UPPER(course_code) IN ({placeholders})
+                     ORDER BY timestamp DESC LIMIT ?''',
+                tuple(course_codes) + (limit,)
+            )
+            metrics_rows = c.fetchall()
+        else:
+            c.execute(
+                '''SELECT timestamp, course_name, course_code, query_text,
+                          search_strategy, top_n, returned_doc_ids, scores, user
+                   FROM retrieval_metrics
+                   ORDER BY timestamp DESC LIMIT ?''',
+                (limit,)
+            )
+            metrics_rows = c.fetchall()
+
+        metrics = []
+        for row in metrics_rows:
+            metrics.append({
+                'timestamp': row[0],
+                'course_name': row[1],
+                'course_code': row[2],
+                'query_text': row[3],
+                'search_strategy': row[4],
+                'top_n': row[5],
+                'returned_doc_ids': json.loads(row[6]),
+                'scores': json.loads(row[7]),
+                'user': row[8],
+            })
+
+        active_courses = set()
+        for metric in metrics:
+            if metric.get('course_code'):
+                active_courses.add(metric['course_code'])
+            elif metric.get('course_name'):
+                active_courses.add(metric['course_name'])
+
+        feedback_counts = {'up': 0, 'down': 0}
+        feedback_total = 0
+        if role != 'profesor' or course_ids:
+            feedback_query = 'SELECT feedback_value, COUNT(*) FROM agent_chat_feedback'
+            feedback_params = []
+            if course_ids:
+                placeholders = ', '.join('?' for _ in course_ids)
+                feedback_query += f' WHERE course_id IN ({placeholders})'
+                feedback_params = course_ids
+            feedback_query += ' GROUP BY feedback_value'
+            c.execute(feedback_query, tuple(feedback_params))
+            for value, count in c.fetchall():
+                if value in feedback_counts:
+                    feedback_counts[value] = count
+            feedback_total = feedback_counts['up'] + feedback_counts['down']
+
+        rating_distribution = {str(score): 0 for score in range(1, 6)}
+        rating_total = 0
+        rating_sum = 0
+        if role != 'profesor' or course_ids:
+            rating_query = 'SELECT rating_score, COUNT(*) FROM agent_chat_session_ratings'
+            rating_params = []
+            if course_ids:
+                placeholders = ', '.join('?' for _ in course_ids)
+                rating_query += f' WHERE course_id IN ({placeholders})'
+                rating_params = course_ids
+            rating_query += ' GROUP BY rating_score'
+            c.execute(rating_query, tuple(rating_params))
+            for score, count in c.fetchall():
+                score_int = int(score)
+                rating_distribution[str(score_int)] = count
+                rating_total += count
+                rating_sum += score_int * count
+
+        rating_average = round(rating_sum / rating_total, 2) if rating_total else 0
+
+        suggestion_counts = {'aprobado': 0, 'rechazado': 0, 'pendiente': 0}
+        if role != 'profesor' or course_ids:
+            suggestion_query = 'SELECT estado, COUNT(*) FROM agent_suggestions'
+            suggestion_params = []
+            if course_ids:
+                placeholders = ', '.join('?' for _ in course_ids)
+                suggestion_query += f' WHERE course_id IN ({placeholders})'
+                suggestion_params = course_ids
+            suggestion_query += ' GROUP BY estado'
+            c.execute(suggestion_query, tuple(suggestion_params))
+            for estado, count in c.fetchall():
+                if estado in suggestion_counts:
+                    suggestion_counts[estado] = count
+
+        response = {
+            'scope': {
+                'role': role,
+                'course_count': course_count,
+            },
+            'retrieval': {
+                'total': len(metrics),
+                'active_courses': len(active_courses),
+                'last_query_at': metrics[0]['timestamp'] if metrics else None,
+                'metrics': metrics,
+            },
+            'feedback': {
+                'up': feedback_counts['up'],
+                'down': feedback_counts['down'],
+                'total': feedback_total,
+                'ratio_up': round((feedback_counts['up'] / feedback_total) * 100, 1) if feedback_total else 0,
+            },
+            'session_ratings': {
+                'average': rating_average,
+                'total': rating_total,
+                'distribution': rating_distribution,
+            },
+            'suggestions': {
+                'aprobado': suggestion_counts['aprobado'],
+                'rechazado': suggestion_counts['rechazado'],
+                'pendiente': suggestion_counts['pendiente'],
+                'total': sum(suggestion_counts.values()),
+                'porcentaje_aprobacion': round(
+                    (suggestion_counts['aprobado'] /
+                     (suggestion_counts['aprobado'] + suggestion_counts['rechazado'])) * 100, 1
+                ) if (suggestion_counts['aprobado'] + suggestion_counts['rechazado']) > 0 else 0,
+            },
+        }
+
+        # Distribución del estado de documentos
+        doc_status_counts = {}
+        if course_ids:
+            placeholders = ', '.join('?' for _ in course_ids)
+            c.execute(
+                f'''SELECT co.status, COUNT(d.id) as doc_count
+                    FROM courses co
+                    LEFT JOIN documents d ON d.course = co.name
+                    WHERE co.id IN ({placeholders})
+                    GROUP BY co.status''',
+                tuple(course_ids)
+            )
+        else:
+            c.execute(
+                '''SELECT co.status, COUNT(d.id) as doc_count
+                   FROM courses co
+                   LEFT JOIN documents d ON d.course = co.name
+                   GROUP BY co.status'''
+            )
+
+        for status, count in c.fetchall():
+            doc_status_counts[status] = count
+
+        response['documents'] = {
+            'distribution': doc_status_counts,
+            'total': sum(doc_status_counts.values()),
+        }
+
+        return jsonify(response), 200
+
+    finally:
+
+        con.close()
+
+@app.route('/api/dashboard/suggestions', methods=['GET'])
+@admin_required
+def get_dashboard_suggestions():
+    """Retorna lista de sugerencias filtrable por curso, tipo y estado.
+    
+    Profesor: solo ve sugerencias de sus propios cursos.
+    Admin: ve todas las sugerencias.
+    """
+
+    user = session.get('user')
+    course_id_raw = request.args.get('course_id', '').strip()
+    tipo = request.args.get('tipo', '').strip().lower()
+    estado = request.args.get('estado', '').strip().lower()
+    raw_limit = request.args.get('limit', 50)
+
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    limit = min(max(1, limit), 200)
+
+    con = get_db_connection()
+    c = con.cursor()
+
+    try:
+
+        c.execute("SELECT role FROM users WHERE username = ?", (user,))
+        role_row = c.fetchone()
+
+        if not role_row:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        role = role_row[0]
+
+        # Obtener curso_ids permitidos según el rol
+        allowed_course_ids = []
+
+        if role == 'profesor':
+            scope = _get_professor_course_scope(c, user)
+            allowed_course_ids = scope['course_ids']
+
+            if not allowed_course_ids:
+                return jsonify({'total': 0, 'suggestions': []}), 200
+
+        # Validar course_id si se pasa como filtro
+        course_id = None
+        if course_id_raw:
+            try:
+                course_id = int(course_id_raw)
+            except (TypeError, ValueError):
+                return jsonify({'error': "El parametro 'course_id' debe ser un numero entero"}), 400
+
+            # Si es profesor, verificar que el curso le pertenece
+            if role == 'profesor' and course_id not in allowed_course_ids:
+                return jsonify({'total': 0, 'suggestions': []}), 200
+
+        # Validar tipo si se pasa como filtro
+        valid_tipos = ('redundancia', 'deactualizacion', 'conflicto')
+        if tipo and tipo not in valid_tipos:
+            return jsonify({'error': f"El tipo debe ser uno de: {', '.join(valid_tipos)}"}), 400
+
+        # Validar estado si se pasa como filtro
+        valid_estados = ('pendiente', 'aprobado', 'rechazado')
+        if estado and estado not in valid_estados:
+            return jsonify({'error': f"El estado debe ser uno de: {', '.join(valid_estados)}"}), 400
+
+        # Construir query dinámicamente
+        where_clauses = []
+        params = []
+
+        if role == 'profesor':
+            placeholders = ', '.join('?' for _ in allowed_course_ids)
+            where_clauses.append(f'course_id IN ({placeholders})')
+            params.extend(allowed_course_ids)
+
+        if course_id:
+            where_clauses.append('course_id = ?')
+            params.append(course_id)
+
+        if tipo:
+            where_clauses.append('tipo = ?')
+            params.append(tipo)
+
+        if estado:
+            where_clauses.append('estado = ?')
+            params.append(estado)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+        params.append(limit)
+
+        c.execute(
+            f'''SELECT s.id, s.course_id, co.name, s.tipo, s.input_context,
+                       s.razonamiento, s.evidencia_ids, s.estado, s.created_at,
+                       s.reviewed_at, s.reviewed_by, s.feedback_text, s.score_manual
+                FROM agent_suggestions s
+                JOIN courses co ON co.id = s.course_id
+                {where_sql}
+                ORDER BY s.created_at DESC
+                LIMIT ?''',
+            tuple(params)
+        )
+
+        rows = c.fetchall()
+
+    finally:
+        con.close()
+
+    suggestions = []
+    for row in rows:
+        suggestions.append({
+            'id': row[0],
+            'course_id': row[1],
+            'course_name': row[2],
+            'tipo': row[3],
+            'input_context': row[4],
+            'razonamiento': row[5],
+            'evidencia_ids': _deserialize_evidence_ids(row[6]),
+            'estado': row[7],
+            'created_at': row[8],
+            'reviewed_at': row[9],
+            'reviewed_by': row[10],
+            'feedback_text': row[11],
+            'score_manual': row[12],
+        })
+
+    return jsonify({'total': len(suggestions), 'suggestions': suggestions}), 200
+
+
 @app.route('/api/retrieval-metrics', methods=['GET'])
 @admin_required
 def get_retrieval_metrics():
     """Retorna las métricas de consultas realizadas (solo admin/profesor)."""
 
-    course_code = request.args.get('course_code', '').strip()
-    limit = min(int(request.args.get('limit', 50)), 200)
+    course_code_raw = request.args.get('course_code', '').strip()
+    raw_limit = request.args.get('limit', 50)
 
-    con = sqlite3.connect(DATABASE)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El parametro 'limit' debe ser un numero entero"}), 400
+
+    limit = min(max(1, limit), 200)
+    normalized_course_code = normalize_course_code(course_code_raw)
+
+    con = get_db_connection()
     c = con.cursor()
 
-    if course_code:
-        c.execute('''SELECT timestamp, course_name, course_code, query_text,
-                            search_strategy, top_n, returned_doc_ids, scores, user
-                     FROM retrieval_metrics
-                     WHERE course_code = ?
-                     ORDER BY timestamp DESC LIMIT ?''', (course_code, limit))
-    else:
-        c.execute('''SELECT timestamp, course_name, course_code, query_text,
-                            search_strategy, top_n, returned_doc_ids, scores, user
-                     FROM retrieval_metrics
-                     ORDER BY timestamp DESC LIMIT ?''', (limit,))
+    try:
 
-    rows = c.fetchall()
-    con.close()
+        user = session.get('user')
+        c.execute("SELECT role FROM users WHERE username = ?", (user,))
+        role_row = c.fetchone()
+
+        if not role_row:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        role = role_row[0]
+        course_codes = []
+
+        if role == 'profesor':
+            scope = _get_professor_course_scope(c, user)
+            course_codes = scope['course_codes']
+
+            if not course_codes:
+                return jsonify({'total': 0, 'metrics': []}), 200
+
+        if normalized_course_code:
+            if role == 'profesor' and normalized_course_code not in course_codes:
+                return jsonify({'total': 0, 'metrics': []}), 200
+
+            c.execute(
+                '''SELECT timestamp, course_name, course_code, query_text,
+                          search_strategy, top_n, returned_doc_ids, scores, user
+                   FROM retrieval_metrics
+                   WHERE UPPER(course_code) = ?
+                   ORDER BY timestamp DESC LIMIT ?''',
+                (normalized_course_code, limit)
+            )
+        else:
+            if role == 'profesor':
+                placeholders = ', '.join('?' for _ in course_codes)
+                c.execute(
+                    f'''SELECT timestamp, course_name, course_code, query_text,
+                              search_strategy, top_n, returned_doc_ids, scores, user
+                       FROM retrieval_metrics
+                       WHERE UPPER(course_code) IN ({placeholders})
+                       ORDER BY timestamp DESC LIMIT ?''',
+                    tuple(course_codes) + (limit,)
+                )
+            else:
+                c.execute(
+                    '''SELECT timestamp, course_name, course_code, query_text,
+                              search_strategy, top_n, returned_doc_ids, scores, user
+                       FROM retrieval_metrics
+                       ORDER BY timestamp DESC LIMIT ?''',
+                    (limit,)
+                )
+
+        rows = c.fetchall()
+
+    finally:
+
+        con.close()
 
     metrics = []
     for row in rows:
@@ -3793,16 +4546,13 @@ def export_agent_suggestions(course_id):
     return response
 
 
-@app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
-@admin_required
-def resolve_agent_suggestion(suggestion_id):
+def _resolve_agent_suggestion_request(suggestion_id, data):
     """Aprueba o rechaza una sugerencia del agente.
     
     Si la sugerencia es aprobada y es de tipo redundancia,
     elimina automáticamente los chunks de la base vectorial.
     """
 
-    data = request.get_json(silent=True) or {}
     estado = str(data.get('estado', '')).strip()
     feedback_text = str(data.get('feedback_text', '') or '').strip()
     score_raw = data.get('score_manual')
@@ -3902,7 +4652,69 @@ def resolve_agent_suggestion(suggestion_id):
             'not_found': vector_deletion_result.get('not_found', []),
         }
 
+    response['suggestion'] = get_agent_suggestion(suggestion_id)
+
     return jsonify(response), 200
+
+
+@app.route('/api/agent/suggestions/<int:suggestion_id>/resolve', methods=['POST'])
+@admin_required
+def resolve_agent_suggestion(suggestion_id):
+    """Aprueba o rechaza una sugerencia desde el dashboard HITL."""
+
+    data = request.get_json(silent=True) or {}
+    return _resolve_agent_suggestion_request(suggestion_id, data)
+
+
+@app.route('/api/agent/resolve-suggestion', methods=['POST'])
+@admin_required
+def resolve_agent_suggestion_from_chat():
+    """Compatibilidad para resolver una sugerencia embebida en el chat."""
+
+    data = request.get_json(silent=True) or {}
+    suggestion_id_raw = data.get('suggestion_id')
+
+    try:
+        suggestion_id = int(suggestion_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "El campo 'suggestion_id' debe ser un numero entero"}), 400
+
+    return _resolve_agent_suggestion_request(suggestion_id, data)
+
+
+@app.route('/api/agent/chat/feedback', methods=['POST'])
+@admin_required
+def save_agent_chat_feedback():
+    """Guarda feedback pulgar arriba/abajo para una respuesta conversacional."""
+
+    data = request.get_json(silent=True) or {}
+    message_id_raw = data.get('message_id')
+    course_id_raw = data.get('course_id')
+    feedback_value = str(data.get('feedback_value', '') or '').strip().lower()
+
+    try:
+        message_id = int(message_id_raw)
+        course_id = int(course_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': "Los campos 'message_id' y 'course_id' deben ser enteros"}), 400
+
+    if feedback_value not in ('up', 'down'):
+        return jsonify({'error': "El campo 'feedback_value' debe ser 'up' o 'down'"}), 400
+
+    updated, reason = upsert_agent_chat_feedback(
+        course_id,
+        message_id,
+        feedback_value,
+        session['user'],
+    )
+
+    if not updated:
+        if reason == 'not_agent':
+            return jsonify({'error': 'Solo se puede valorar una respuesta del agente'}), 400
+
+        return jsonify({'error': 'Mensaje no encontrado'}), 404
+
+    return jsonify({'message': 'Feedback guardado'}), 200
 
 
 @app.route('/api/agent/chat/session-rating', methods=['POST'])
@@ -3990,7 +4802,7 @@ def agent_chat():
     # Resolver course_code desde la BD
     con = sqlite3.connect(DATABASE)
     c = con.cursor()
-    c.execute('SELECT course_code FROM courses WHERE id = ?', (course_id,))
+    c.execute('SELECT course_code, name FROM courses WHERE id = ?', (course_id,))
     row = c.fetchone()
     con.close()
 
@@ -3998,6 +4810,7 @@ def agent_chat():
         return jsonify({'error': 'Curso no encontrado'}), 404
 
     course_code = row[0]
+    course_name = row[1]
 
     # Guardar mensaje del profesor
     save_agent_chat_message(
@@ -4029,6 +4842,8 @@ def agent_chat():
             'sources': [],
             'conversation_id': conversation_id,
             'agent_message_id': agent_message_id,
+            'is_suggestion': False,
+            'suggestion': None,
         }), 200
 
     # ── Construir historial de mensajes para el LLM ────────────────────────
@@ -4059,6 +4874,7 @@ def agent_chat():
         llm = get_llm_with_tools()
         ai_response = llm.invoke(lc_messages)
         sources = []
+        evidence_ids = []
         tool_calls = getattr(ai_response, 'tool_calls', []) or []
 
         if tool_calls:
@@ -4071,10 +4887,18 @@ def agent_chat():
                 tool_call_id = tool_call['id']
 
                 if tool_name in tools_by_name:
+                    if tool_name == 'search_course_documents' and 'course_id' not in tool_args:
+                        tool_args = {**tool_args, 'course_id': course_id}
                     tool_result = str(tools_by_name[tool_name].invoke(tool_args))
 
                     # Extraer nombres de archivo del output formateado de la tool
                     for line in tool_result.splitlines():
+                        chunk_match = re.search(r'Chunk:\s*(.+?)\s*\|', line)
+                        if chunk_match:
+                            evidence_id = chunk_match.group(1).strip()
+                            if evidence_id and evidence_id not in evidence_ids:
+                                evidence_ids.append(evidence_id)
+
                         match = re.search(r'Fuente:\s*(.+?)\s*\|', line)
                         if match:
                             source = match.group(1).strip()
@@ -4098,14 +4922,58 @@ def agent_chat():
     except Exception as e:
         return jsonify({'error': f'Error al procesar la respuesta del agente: {str(e)}'}), 500
 
+    from agent_workflow import classify_chat_response_for_suggestion
+
+    classification = classify_chat_response_for_suggestion(
+        final_text,
+        course_id = course_id,
+        sources = sources,
+        evidence_ids = evidence_ids,
+    )
+    suggestion = classification.get('suggestion') if classification.get('is_suggestion') else None
+    suggestion_id = None
+    is_suggestion = bool(suggestion)
+
+    if suggestion:
+        suggestion_id = save_agent_suggestion(
+            course_id = course_id,
+            conversation_id = conversation_id,
+            tipo = suggestion['tipo'],
+            input_context = suggestion['input_context'],
+            razonamiento = suggestion['razonamiento'],
+            evidencia_ids = suggestion['evidencia_ids'],
+            estado = 'pendiente',
+        )
+        suggestion = get_agent_suggestion(suggestion_id)
+
     # Guardar respuesta del agente
-    agent_message_id = save_agent_chat_message(course_id, conversation_id, 'agente', final_text)
+    agent_message_id = save_agent_chat_message(
+        course_id,
+        conversation_id,
+        'agente',
+        final_text,
+        is_suggestion = is_suggestion,
+        suggestion_id = suggestion_id,
+    )
+
+    # Registrar la consulta en retrieval_metrics para el dashboard
+    save_retrieval_metrics(
+        course_name=course_name,
+        course_code=course_code,
+        query_text=message,
+        strategy='semantic',
+        top_n=5,
+        results=threshold_results,
+        user=session['user'],
+    )
 
     return jsonify({
         'response': final_text,
         'sources': sources,
         'conversation_id': conversation_id,
         'agent_message_id': agent_message_id,
+        'is_suggestion': is_suggestion,
+        'suggestion': suggestion,
     }), 200
 
 

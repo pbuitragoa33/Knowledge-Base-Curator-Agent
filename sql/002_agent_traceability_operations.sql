@@ -1,8 +1,10 @@
 -- Insertar un mensaje entre profesor y agente
 INSERT INTO agent_chat_history
-    (course_id, conversation_id, sender_type, sender_username, message_text, created_at)
+    (course_id, conversation_id, sender_type, sender_username, message_text,
+    is_suggestion, suggestion_id, created_at)
 VALUES
-    (:course_id, :conversation_id, :sender_type, :sender_username, :message_text, :created_at);
+    (:course_id, :conversation_id, :sender_type, :sender_username, :message_text,
+    :is_suggestion, :suggestion_id, :created_at);
 
 -- Listar historial cronológico del chat de un curso
 SELECT
@@ -12,6 +14,8 @@ SELECT
     sender_type,
     sender_username,
     message_text,
+    is_suggestion,
+    suggestion_id,
     created_at
 FROM agent_chat_history
 WHERE course_id = :course_id

@@ -155,6 +155,174 @@
             font-weight: 600;
         }
 
+        .chat-suggestion-card {
+            max-width: 72%;
+            background: #fff;
+            border: 1px solid #d7dde8;
+            border-left: 4px solid #2f80ed;
+            border-radius: 8px;
+            padding: 14px 16px;
+            color: #283044;
+            box-shadow: 0 4px 16px rgba(31, 45, 61, 0.12);
+        }
+
+        .chat-suggestion-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .chat-suggestion-title {
+            margin: 0;
+            font-size: 0.98em;
+            font-weight: 700;
+        }
+
+        .chat-suggestion-badge,
+        .chat-suggestion-status {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 0.78em;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .chat-suggestion-badge {
+            background: #eef4ff;
+            color: #235aaf;
+        }
+
+        .chat-suggestion-status {
+            background: #f1f3f5;
+            color: #596275;
+        }
+
+        .chat-suggestion-status.aprobado {
+            background: #e8f5ec;
+            color: #1f7a3d;
+        }
+
+        .chat-suggestion-status.rechazado {
+            background: #fdecec;
+            color: #a52929;
+        }
+
+        .chat-suggestion-text {
+            margin: 0 0 12px 0;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+
+        .chat-suggestion-field {
+            margin-top: 10px;
+        }
+
+        .chat-suggestion-field strong {
+            display: block;
+            margin-bottom: 3px;
+            font-size: 0.78em;
+            color: #637083;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .chat-suggestion-field p {
+            margin: 0;
+            white-space: pre-wrap;
+            line-height: 1.45;
+        }
+
+        .chat-suggestion-evidence {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #3f4b5f;
+        }
+
+        .chat-suggestion-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px solid #edf0f5;
+        }
+
+        .chat-suggestion-actions .btn {
+            width: auto;
+            margin-top: 0;
+            flex: 1;
+        }
+
+        .suggestion-resolution-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 60;
+        }
+
+        .suggestion-resolution-backdrop.open {
+            display: flex;
+        }
+
+        .suggestion-resolution-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px 22px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+        }
+
+        .suggestion-resolution-card h3 {
+            margin: 0 0 8px 0;
+        }
+
+        .suggestion-resolution-card p {
+            margin: 0 0 16px 0;
+            color: #666;
+        }
+
+        .suggestion-resolution-card label {
+            display: block;
+            font-weight: 600;
+            margin-top: 12px;
+            margin-bottom: 6px;
+        }
+
+        .suggestion-resolution-card select,
+        .suggestion-resolution-card textarea {
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 0.95em;
+        }
+
+        .suggestion-resolution-card textarea {
+            resize: vertical;
+        }
+
+        .suggestion-resolution-status {
+            margin-top: 10px;
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .suggestion-resolution-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 18px;
+        }
+
         /* ── Modal calificacion general ───────────────────────────────── */
         .exit-rating-backdrop {
             position: fixed;
@@ -378,6 +546,34 @@
         </div>
     </div>
 
+    <div class="suggestion-resolution-backdrop" id="suggestionResolutionModal" aria-hidden="true">
+        <div class="suggestion-resolution-card" role="dialog" aria-modal="true" aria-labelledby="suggestionResolutionTitle">
+            <h3 id="suggestionResolutionTitle">Resolver sugerencia</h3>
+            <p id="suggestionResolutionSubtitle">Registra la decision sobre esta sugerencia.</p>
+
+            <label for="suggestionResolutionScore">Calificacion (1 a 5)</label>
+            <select id="suggestionResolutionScore">
+                <option value="">Selecciona una calificacion</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+            </select>
+
+            <div id="suggestionResolutionFeedbackGroup">
+                <label for="suggestionResolutionFeedback">Feedback</label>
+                <textarea id="suggestionResolutionFeedback" rows="4" placeholder="Escribe el feedback para mejorar el agente..."></textarea>
+            </div>
+
+            <div class="suggestion-resolution-status" id="suggestionResolutionStatus"></div>
+            <div class="suggestion-resolution-actions">
+                <button id="suggestionResolutionCancel" class="btn btn-secondary">Cancelar</button>
+                <button id="suggestionResolutionSubmit" class="btn btn-primary">Guardar</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const courseId       = {{ course_id }};
         const storageKey     = `agentChatConversation:${courseId}`;
@@ -394,8 +590,18 @@
         const exitRatingStatus = document.getElementById('exitRatingStatus');
         const exitRatingSkip = document.getElementById('exitRatingSkip');
         const exitRatingSubmit = document.getElementById('exitRatingSubmit');
+        const suggestionResolutionModal = document.getElementById('suggestionResolutionModal');
+        const suggestionResolutionTitle = document.getElementById('suggestionResolutionTitle');
+        const suggestionResolutionSubtitle = document.getElementById('suggestionResolutionSubtitle');
+        const suggestionResolutionScore = document.getElementById('suggestionResolutionScore');
+        const suggestionResolutionFeedbackGroup = document.getElementById('suggestionResolutionFeedbackGroup');
+        const suggestionResolutionFeedback = document.getElementById('suggestionResolutionFeedback');
+        const suggestionResolutionStatus = document.getElementById('suggestionResolutionStatus');
+        const suggestionResolutionCancel = document.getElementById('suggestionResolutionCancel');
+        const suggestionResolutionSubmit = document.getElementById('suggestionResolutionSubmit');
         let exitRatingValue = null;
         let pendingExitUrl = null;
+        let pendingSuggestionResolution = null;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -458,6 +664,60 @@
                 </div>`;
         }
 
+        const SUGGESTION_TYPE_LABELS = {
+            redundancia: 'Redundancia',
+            deactualizacion: 'Desactualizacion',
+            conflicto: 'Conflicto',
+        };
+
+        function suggestionStatusLabel(status) {
+            if (status === 'aprobado') return 'Aprobada';
+            if (status === 'rechazado') return 'Rechazada';
+            return 'Pendiente';
+        }
+
+        function buildSuggestionCardHtml(text, sources, suggestion) {
+            const s = suggestion || {};
+            const suggestionId = s.id || s.suggestion_id || '';
+            const tipo = String(s.tipo || '').trim();
+            const tipoLabel = SUGGESTION_TYPE_LABELS[tipo] || (tipo || 'Sugerencia');
+            const status = String(s.estado || 'pendiente').trim();
+            const isPending = status === 'pendiente';
+            const evidencia = Array.isArray(s.evidencia_ids) && s.evidencia_ids.length > 0
+                ? s.evidencia_ids.join(', ')
+                : 'Sin evidencia asociada';
+            const disabledAttr = isPending && suggestionId ? '' : 'disabled';
+
+            return `
+                <div class="chat-suggestion-card" data-suggestion-id="${escapeHtml(suggestionId)}" data-status="${escapeHtml(status)}">
+                    <div class="chat-suggestion-top">
+                        <div>
+                            <p class="chat-suggestion-title">Sugerencia accionable</p>
+                            <span class="chat-suggestion-badge">${escapeHtml(tipoLabel)}</span>
+                        </div>
+                        <span class="chat-suggestion-status ${escapeHtml(status)}">${suggestionStatusLabel(status)}</span>
+                    </div>
+                    <p class="chat-suggestion-text">${escapeHtml(text)}</p>
+                    <div class="chat-suggestion-field">
+                        <strong>Contexto</strong>
+                        <p>${escapeHtml(s.input_context || text)}</p>
+                    </div>
+                    <div class="chat-suggestion-field">
+                        <strong>Razonamiento</strong>
+                        <p>${escapeHtml(s.razonamiento || 'Sin razonamiento registrado.')}</p>
+                    </div>
+                    <div class="chat-suggestion-field">
+                        <strong>Evidencia</strong>
+                        <p class="chat-suggestion-evidence">${escapeHtml(evidencia)}</p>
+                    </div>
+                    ${buildSourcesHtml(sources)}
+                    <div class="chat-suggestion-actions">
+                        <button class="btn btn-success suggestion-action-btn" type="button" data-estado="aprobado" ${disabledAttr}>Aprobar</button>
+                        <button class="btn btn-danger suggestion-action-btn" type="button" data-estado="rechazado" ${disabledAttr}>Rechazar</button>
+                    </div>
+                </div>`;
+        }
+
         function appendUserBubble(text) {
             hideEmpty();
             const row = document.createElement('div');
@@ -467,13 +727,21 @@
             scrollToBottom();
         }
 
-        function appendAgentBubble(text, sources, messageId) {
+        function appendAgentBubble(text, sources, messageId, options = {}) {
             hideEmpty();
             const row = document.createElement('div');
             row.className = 'bubble-row agent';
             if (messageId) {
                 row.dataset.messageId = messageId;
             }
+
+            if (options.isSuggestion || options.suggestion) {
+                row.innerHTML = buildSuggestionCardHtml(text, sources, options.suggestion || {});
+                messagesEl.appendChild(row);
+                scrollToBottom();
+                return;
+            }
+
             row.innerHTML = `
                 <div class="bubble bubble-agent">
                     <p>${escapeHtml(text)}</p>
@@ -568,6 +836,103 @@
             chatInput.focus();
         }
 
+        function openSuggestionResolutionModal(suggestionId, estado) {
+            pendingSuggestionResolution = { suggestionId, estado };
+            suggestionResolutionScore.value = '';
+            suggestionResolutionFeedback.value = '';
+            suggestionResolutionStatus.textContent = '';
+
+            if (estado === 'rechazado') {
+                suggestionResolutionTitle.textContent = 'Rechazar sugerencia';
+                suggestionResolutionSubtitle.textContent = 'Agrega calificacion y feedback obligatorio.';
+                suggestionResolutionFeedbackGroup.style.display = 'block';
+            } else {
+                suggestionResolutionTitle.textContent = 'Aprobar sugerencia';
+                suggestionResolutionSubtitle.textContent = 'Agrega una calificacion para registrar la decision.';
+                suggestionResolutionFeedbackGroup.style.display = 'none';
+            }
+
+            suggestionResolutionModal.classList.add('open');
+            suggestionResolutionModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeSuggestionResolutionModal() {
+            pendingSuggestionResolution = null;
+            suggestionResolutionModal.classList.remove('open');
+            suggestionResolutionModal.setAttribute('aria-hidden', 'true');
+        }
+
+        function updateSuggestionCards(suggestionId, suggestion) {
+            const status = suggestion && suggestion.estado ? suggestion.estado : 'pendiente';
+            const cards = Array.from(messagesEl.querySelectorAll('.chat-suggestion-card'))
+                .filter(card => card.dataset.suggestionId === String(suggestionId));
+
+            cards.forEach(card => {
+                card.dataset.status = status;
+                const statusEl = card.querySelector('.chat-suggestion-status');
+                if (statusEl) {
+                    statusEl.className = `chat-suggestion-status ${status}`;
+                    statusEl.textContent = suggestionStatusLabel(status);
+                }
+
+                if (suggestion && suggestion.feedback_text) {
+                    card.dataset.feedbackText = suggestion.feedback_text;
+                }
+
+                const buttons = card.querySelectorAll('.suggestion-action-btn');
+                buttons.forEach(button => {
+                    button.disabled = status !== 'pendiente';
+                });
+            });
+        }
+
+        async function submitSuggestionResolution() {
+            if (!pendingSuggestionResolution) return;
+
+            const scoreValue = parseInt(suggestionResolutionScore.value, 10);
+            const feedbackValue = suggestionResolutionFeedback.value.trim();
+            const { suggestionId, estado } = pendingSuggestionResolution;
+
+            if (Number.isNaN(scoreValue) || scoreValue < 1 || scoreValue > 5) {
+                suggestionResolutionStatus.textContent = 'Selecciona una calificacion valida del 1 al 5.';
+                return;
+            }
+
+            if (estado === 'rechazado' && !feedbackValue) {
+                suggestionResolutionStatus.textContent = 'El feedback es requerido al rechazar una sugerencia.';
+                return;
+            }
+
+            suggestionResolutionSubmit.disabled = true;
+
+            try {
+                const response = await fetch('/api/agent/resolve-suggestion', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        suggestion_id: suggestionId,
+                        estado,
+                        score_manual: scoreValue,
+                        feedback_text: feedbackValue,
+                    }),
+                });
+
+                const data = await parseJsonResponse(response);
+
+                if (!response.ok) {
+                    suggestionResolutionStatus.textContent = data.error || 'No se pudo resolver la sugerencia.';
+                    return;
+                }
+
+                updateSuggestionCards(suggestionId, data.suggestion || { estado });
+                closeSuggestionResolutionModal();
+            } catch (error) {
+                suggestionResolutionStatus.textContent = `Error: ${error.message}`;
+            } finally {
+                suggestionResolutionSubmit.disabled = false;
+            }
+        }
+
         async function loadHistory() {
             let url = `/api/agent/chat/history/${courseId}?limit=10`;
 
@@ -596,7 +961,10 @@
                     if (entry.sender_type === 'profesor') {
                         appendUserBubble(entry.message_text);
                     } else {
-                        appendAgentBubble(entry.message_text, [], entry.id);
+                        appendAgentBubble(entry.message_text, [], entry.id, {
+                            isSuggestion: Boolean(entry.is_suggestion),
+                            suggestion: entry.suggestion,
+                        });
                     }
                 });
             } catch (error) {
@@ -636,7 +1004,10 @@
                 if (!response.ok) {
                     appendErrorBubble(`Error: ${data.error || 'No se pudo obtener respuesta del agente'}`);
                 } else {
-                    appendAgentBubble(data.response, data.sources || [], data.agent_message_id);
+                    appendAgentBubble(data.response, data.sources || [], data.agent_message_id, {
+                        isSuggestion: Boolean(data.is_suggestion),
+                        suggestion: data.suggestion,
+                    });
                 }
             } catch (error) {
                 removeTyping();
@@ -654,6 +1025,18 @@
                 e.preventDefault();
                 sendMessage();
             }
+        });
+
+        messagesEl.addEventListener('click', function (event) {
+            const button = event.target.closest('.suggestion-action-btn');
+            if (!button) return;
+
+            const card = button.closest('.chat-suggestion-card');
+            const suggestionId = card ? card.dataset.suggestionId : '';
+
+            if (!suggestionId) return;
+
+            openSuggestionResolutionModal(suggestionId, button.dataset.estado);
         });
 
         messagesEl.addEventListener('click', async function (event) {
@@ -760,6 +1143,9 @@
                 exitRatingStatus.textContent = `Error: ${error.message}`;
             }
         });
+
+        suggestionResolutionCancel.addEventListener('click', closeSuggestionResolutionModal);
+        suggestionResolutionSubmit.addEventListener('click', submitSuggestionResolution);
 
         backToCourseBtn.addEventListener('click', function (event) {
             event.preventDefault();

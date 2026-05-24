@@ -5,6 +5,41 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestor de Documentos - {{ course }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .document-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .document-status-badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 0.76em;
+            font-weight: 700;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .document-status-badge.status-actualizado {
+            background: #e8f5ec;
+            color: #1f7a3d;
+        }
+
+        .document-status-badge.status-en_revision {
+            background: #fff4df;
+            color: #8a5a00;
+        }
+
+        .document-status-badge.status-aprobado {
+            background: #eef4ff;
+            color: #235aaf;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -246,6 +281,19 @@
             });
         }
 
+        function buildDocumentStatusBadge(status) {
+            const normalizedStatus = String(status || 'ACTUALIZADO').trim().toUpperCase();
+            const labels = {
+                ACTUALIZADO: 'Actualizado',
+                EN_REVISION: 'En revision',
+                APROBADO: 'Aprobado',
+            };
+            const cssClass = normalizedStatus.toLowerCase();
+            const label = labels[normalizedStatus] || labels.ACTUALIZADO;
+
+            return `<span class="document-status-badge status-${cssClass}">${label}</span>`;
+        }
+
         async function loadDocuments() {
             try {
                 const response = await fetch(`/api/documents/${encodeURIComponent(course)}`);
@@ -262,7 +310,10 @@
                         <div class="document-item">
                             <div class="document-header">
                                 <div>
-                                    <p class="document-name">${doc.filename}</p>
+                                    <div class="document-title-row">
+                                        <p class="document-name">${doc.filename}</p>
+                                        ${buildDocumentStatusBadge(doc.status)}
+                                    </div>
                                     <p class="document-info">
                                         <span>Hash: <code>${doc.file_hash}</code></span>
                                         <span>Subido por: ${doc.uploaded_by}</span>
@@ -285,7 +336,10 @@
                         <div class="document-item">
                             <div class="document-header">
                                 <div>
-                                    <p class="document-name">${doc.filename}</p>
+                                    <div class="document-title-row">
+                                        <p class="document-name">${doc.filename}</p>
+                                        ${buildDocumentStatusBadge(doc.status)}
+                                    </div>
                                     <p class="document-info">Hash: <code>${doc.file_hash}</code></p>
                                     <p class="document-date">${doc.upload_date}</p>
                                 </div>
