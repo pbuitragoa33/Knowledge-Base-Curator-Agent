@@ -198,6 +198,18 @@ http://localhost:5000
 └─────────────────────────────────────┘
 ```
 
+### **4. Dashboard HITL (Revisión de Sugerencias)**
+
+#### Para el caso de Profesor/Admin:
+- **Acceso:** Desde la vista del curso o mediante la ruta `/review/<course>`.
+- **Sugerencias Pendientes:** Revisa las sugerencias del agente de curaduría (Redundancia, Desactualización, Conflicto).
+- **Detalle de la Sugerencia:** Analiza el contexto, el razonamiento del agente y la evidencia (chunks) extraída.
+- **Aprobar / Rechazar:**
+  - Al **Aprobar**, la sugerencia se mueve al historial. (Si es redundancia/eliminación, se eliminan los chunks asociados en la base vectorial automáticamente).
+  - Al **Rechazar**, es obligatorio dejar un feedback de texto y asignar una calificación (1 a 5) para mejorar el agente.
+- **Exportar Plan de Acción:** Permite exportar las sugerencias aprobadas en un documento Markdown para utilizarlo como una To-Do list de curaduría.
+- **Historial:** Vista colapsable para consultar las sugerencias ya gestionadas (aprobadas o rechazadas).
+
 
 ## Estructura de Datos
 
